@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class WeatherCameraProcessor:
+class ImagesDownloader:
     def __init__(self, base_url: str = "https://metobs.ssec.wisc.edu/pub/cache/aoss/cameras/east/img/2025/01/09/orig/"):
         self.base_url = base_url
         self.images_dir = Path("downloaded_images/east")
@@ -108,90 +108,6 @@ class WeatherCameraProcessor:
 
         return downloaded_paths
 
-    def create_image_embeddings(self, image_paths: List[Path]) -> List[np.ndarray]:
-        """Create embeddings for images using SigLIP-2 model."""
-        embeddings = []
-        
-        batch_size = 16
-        all_embeddings = []
-        
-        for i in range(0, len(image_paths), batch_size):
-            end = min(i + batch_size, len(image_paths))
-            batch_paths = image_paths[i:end]
-            batch_images = []
-            valid_indices = []
-            
-            # Load all images in the batch
-            for idx, img_path in enumerate(batch_paths):
-                try:
-                    image = Image.open(img_path).convert('RGB')
-                    batch_images.append(image)
-                    valid_indices.append(idx)
-                    logger.info(f"Loaded image {img_path.name}")
-                except Exception as e:
-                    logger.error(f"Error loading image {img_path}: {e}")
-                    # Add zero embedding placeholder for failed images
-                    all_embeddings.append(np.zeros(768))
-                
-            if batch_images:
-                try:
-                # Process batch of images
-                    inputs = self.processor(images=batch_images, return_tensors="pt")
-                    
-                    # Generate embeddings
-                    with torch.no_grad():
-                        image_features = self.model.get_image_features(**inputs)
-                        # Normalize the embeddings
-                        image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
-                    
-                    # Add each embedding to the results
-                    embeddings_numpy = image_features.numpy()
-                    for idx, valid_idx in enumerate(valid_indices):
-                        all_embeddings.append(embeddings_numpy[idx].flatten())
-                        logger.info(f"Created embedding for {batch_paths[valid_idx].name}")
-                
-                except Exception as e:
-                    logger.error(f"Error processing batch: {e}")
-                    # Add zero embeddings for the whole batch if batch processing fails
-                    for _ in range(len(batch_images)):
-                        all_embeddings.append(np.zeros(768))
-            
-        return all_embeddings
-
-    def save_to_chromadb(self, image_paths: List[Path], embeddings: List[np.ndarray]):
-        """Save image embeddings to ChromaDB."""
-        for i, (img_path, embedding) in enumerate(zip(image_paths, embeddings)):
-            try:
-                doc_id = f"weather_img_{i}_{img_path.stem}"
-                
-                # Extract timestamp from filename for metadata
-                timestamp_match = re.match(r'(\d{2})_(\d{2})_(\d{2})\.trig\+00', img_path.stem)
-                if timestamp_match:
-                    hour, minute, second = timestamp_match.groups()
-                    timestamp = f"{hour}:{minute}:{second}"
-                else:
-                    timestamp = "unknown"
-                
-                metadata = {
-                    "filename": img_path.name,
-                    "timestamp": timestamp,
-                    "url": urljoin(self.base_url, img_path.name),
-                    "date": "2025-09-02"
-                }
-                
-                # ChromaDB expects embeddings as lists
-                self.collection.add(
-                    embeddings=[embedding.tolist()],
-                    documents=[f"Weather camera image from {timestamp} on 2025-09-02"],
-                    metadatas=[metadata],
-                    ids=[doc_id]
-                )
-                
-                logger.info(f"Saved {img_path.name} to ChromaDB")
-                
-            except Exception as e:
-                logger.error(f"Error saving {img_path.name} to ChromaDB: {e}")
-
     def process_all(self):
         """Complete processing pipeline."""
         logger.info("Starting image processing pipeline...")
@@ -218,7 +134,7 @@ class WeatherCameraProcessor:
 
 
 def main():
-    processor = WeatherCameraProcessor()
+    processor = ImagesDownloader()
     processor.download_images()
 
 
