@@ -4,9 +4,6 @@ import requests
 from pathlib import Path
 import re
 from typing import List
-import torch
-from PIL import Image
-import numpy as np
 from urllib.parse import urljoin
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,22 +16,6 @@ class ImagesDownloader:
         self.base_url = base_url
         self.images_dir = Path("downloaded_images/east")
         self.images_dir.mkdir(exist_ok=True)
-        
-        # # Initialize SigLIP-2 model for embeddings
-        # self.model = AutoModel.from_pretrained("google/siglip2-base-patch16-384")
-        # self.processor = AutoProcessor.from_pretrained("google/siglip2-base-patch16-384")
-        
-        # # Initialize ChromaDB
-        # self.chroma_client = chromadb.PersistentClient(path="./chroma-data")
-        # try:
-        #     self.collection = self.chroma_client.get_collection("east_camera")
-        #     logger.info("Found existing ChromaDB collection")
-        # except:
-        #     self.collection = self.chroma_client.create_collection(
-        #         name="east_camera",
-        #         embedding_function=embedding_functions.DefaultEmbeddingFunction()
-        #     )
-        #     logger.info("Created new ChromaDB collection")
 
     def get_image_list(self) -> List[str]:
         """Fetch the list of available images from the server."""
