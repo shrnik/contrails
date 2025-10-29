@@ -15,8 +15,8 @@ def dir_speed_last10(hist_ts, hist_x, hist_y, min_span_s=3.0, min_disp_px=2.0):
     x1, y1 = float(hist_x.iloc[-1]), float(hist_y.iloc[-1])
     dx, dy = x1 - x0, y1 - y0
     disp = hypot(dx, dy)
-    # if disp < min_disp_px:
-    #     return None
+    if disp < min_disp_px:
+        return None
     ux, uy = dx/disp, dy/disp
     speed_px_s = disp / span
     return ux, uy, speed_px_s
@@ -145,7 +145,7 @@ def compute_dominant_line_angle(rect_dir_vec, edges_final):
         rho=1,
         theta=np.deg2rad(1.0),
         threshold=20,
-        minLineLength=5,
+        minLineLength=8,
         maxLineGap=2
     )
     if lines is None:
@@ -160,7 +160,6 @@ def compute_dominant_line_angle(rect_dir_vec, edges_final):
     lines_with_lengths = [(x1, y1, x2, y2, np.hypot(x2-x1, y2-y1)) for (x1,y1,x2,y2) in good_lines]
     score = len(good_lines)
     return score, lines_with_lengths
-
 
 def resize_rect_polygon(rect_poly: np.ndarray, delta_px: int) -> np.ndarray:
     """
@@ -181,7 +180,7 @@ def resize_rect_polygon(rect_poly: np.ndarray, delta_px: int) -> np.ndarray:
     return np.round(box).astype(np.int32)
 
 
-def compute_edges_for_rectangles(gray_blurred, rectangles_dict, lower_threshold, upper_threshold, border_px=7):
+def _compute_edges_for_rectangles(gray_blurred, rectangles_dict, border_px=7):
     """
     Helper function to compute Canny edges for each rectangle.
     Returns a dictionary: {ident: edges_masked}
@@ -220,10 +219,7 @@ def compute_edges_for_rectangles(gray_blurred, rectangles_dict, lower_threshold,
 
 
 def apply_canny_to_rectangles(img, prev_img, rectangles_dict, 
-                              lower_threshold=50, upper_threshold=100,
                               blur_kernel=(3, 3), 
-                              overlay_edges=True,
-                              edge_color=(0, 255, 0),
                               border_px=7):
     """
     Apply Canny edge detection to rectangular regions returned by get_directional_rectangle.
@@ -256,15 +252,14 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
         gray_blurred = gray
     
     # Compute edges for all rectangles (shared logic)
-    edges_dict = compute_edges_for_rectangles(gray_blurred, rectangles_dict, 
-                                                lower_threshold, upper_threshold, border_px)
+    edges_dict = _compute_edges_for_rectangles(gray_blurred, rectangles_dict, border_px)
     
     # Create output image and overlay all edges
     output = img.copy()
     
-    for ident, (edges_final, rect_poly) in edges_dict.items():
-        ys, xs = np.where(edges_final > 0)
-        output[ys, xs] = edge_color
+    # for ident, (edges_final, rect_poly) in edges_dict.items():
+    #     ys, xs = np.where(edges_final > 0)
+    #     output[ys, xs] = edge_color
     
 
     # Return individual edge images per aircraft with statistics
@@ -329,10 +324,7 @@ def calculate_edge_statistics(edge_data_dict):
     return pd.DataFrame(stats)
 
 
-
-def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filtered, df_upsampled, 
-                                   draw_rectangles=True, draw_edges=True,
-                                   lower_threshold=50, upper_threshold=150):
+def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filtered, df_upsampled):
     """
     Process a single image: load, detect rectangles, apply Canny edge detection.
     
@@ -362,11 +354,7 @@ def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filter
     # Apply edge detection
     img_output, edge_data, _ = apply_canny_to_rectangles(
         img, prev_img, rectangles,
-        lower_threshold=lower_threshold,
-        upper_threshold=upper_threshold,
         blur_kernel=(3, 3),
-        overlay_edges=True,
-        edge_color=(0, 255, 0)
     )
     
     return img_output, rectangles, edge_data

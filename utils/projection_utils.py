@@ -2,7 +2,7 @@ from pyproj import Transformer, CRS
 import numpy as np
 import cv2
 import pymap3d as pm
-
+import json
 
 def ecef_to_enu(origin_ecef, points_ecef):
 
@@ -13,7 +13,7 @@ def ecef_to_enu(origin_ecef, points_ecef):
     return np.array(enu_points).T
 
 
-def gps_to_camxy_vasha_fixed(lats, lons, alts, cam_ecef, cam_k, cam_r, cam_t, camera_gps, distortion=None):
+def gps_to_camxy_vasha_fixed(lats, lons, alts, cam_k, cam_r, cam_t, camera_gps, distortion=None):
     """
     Fixed version of GPS to camera coordinates conversion.
     Properly handles objects behind camera and outside frame.
@@ -239,3 +239,13 @@ def image_to_gps(image_x, image_y, k_matrix, r_matrix, t_vector, dist_coeffs, ca
     )
     
     return [point_lat, point_lon, point_alt]
+
+def load_camera_parameters(path):
+    with open(path, 'r') as f:
+        camera_params = json.load(f)
+        intrinsics = np.array(camera_params['intrinsics'], dtype=np.float32)
+        distortion = np.array(camera_params['distortion'], dtype=np.float32).reshape(-1, 1)
+        rvec = np.array(camera_params['rotation'], dtype=np.float32)
+        tvec = np.array(camera_params['translation'], dtype=np.float32).reshape(-1, 1) #shape should be (3,1)
+        origin_gps = [camera_params['origin_gps']['lat'], camera_params['origin_gps']['lon'], camera_params['origin_gps']['alt']]  # [lat, lon, alt]
+    return intrinsics, distortion, rvec, tvec, origin_gps

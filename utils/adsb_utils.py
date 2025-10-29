@@ -11,7 +11,7 @@ def clean_numeric(s: pd.Series) -> pd.Series:
     # finally, coerce to numeric
     return pd.to_numeric(s, errors='coerce')
 
-def upsample_aircraft(group):
+def upsample_aircraft(group: pd.DataFrame) -> pd.DataFrame:
     """
     Upsample a single aircraft's data to 1-second intervals using linear interpolation.
     Adds an 'isUpsampled' column to indicate interpolated vs original data.
@@ -27,7 +27,7 @@ def upsample_aircraft(group):
     end_time = group['time'].max()
     
     # Create 1-second intervals
-    time_range = pd.date_range(start=start_time, end=end_time, freq='1S')
+    time_range = pd.date_range(start=start_time, end=end_time, freq='1s')
     
     # Create new dataframe with all seconds
     new_df = pd.DataFrame({'time': time_range})
@@ -59,7 +59,7 @@ def upsample_aircraft(group):
 
     return merged
 
-def get_upsampled_df_for_day(df: pd.DataFrame, from_date: str, to_date: str) -> pd.DataFrame:
+def get_upsampled_df_for_day(df: pd.DataFrame, max_range_m: float = 50000) -> pd.DataFrame:
     """Load CSV, filter for date, and upsample."""
     df.columns = df.columns.str.strip()
 
@@ -70,9 +70,6 @@ def get_upsampled_df_for_day(df: pd.DataFrame, from_date: str, to_date: str) -> 
     
     df = df.dropna(subset=['alt_gnss_meters'])
     df['time'] = pd.to_datetime(df['time'])
-    from_dt = pd.to_datetime(from_date)
-    to_dt = pd.to_datetime(to_date)
-    df = df[(df['time'] >= from_dt) & (df['time'] < to_dt)]
 
         # convert to float
     df['alt_gnss_meters'] = df['alt_gnss_meters'].astype(float)
@@ -96,7 +93,7 @@ def get_upsampled_df_for_day(df: pd.DataFrame, from_date: str, to_date: str) -> 
     # Combine all upsampled data
     df_upsampled = pd.concat(upsampled_groups, ignore_index=True)
     df_upsampled = df_upsampled.sort_values(['ident', 'time']).reset_index(drop=True)
-    df_upsampled= df_upsampled[df_upsampled["distance_m"] < 50000]
+    df_upsampled= df_upsampled[df_upsampled["distance_m"] < max_range_m]
 
     # Check for NaN values in lat, lon, alt_gnss_meters
     nan_rows = df_upsampled[df_upsampled[['lat', 'lon', 'alt_gnss_meters']].isna().any(axis=1)]
