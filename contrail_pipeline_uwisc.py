@@ -122,4 +122,7 @@ def run_contrail_pipeline_uwisc(date_str):
     print(f"Video saved to {output_path}")
 
 
-run_contrail_pipeline_uwisc("2025-10-01")
+def main():
+    for day in range(1, 10):
+        date_str = f"2025-10-{day:02d}"
+        run_contrail_pipeline_uwisc(date_str)
