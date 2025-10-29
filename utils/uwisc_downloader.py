@@ -55,11 +55,11 @@ class ImagesDownloader:
 
         # Skip if already downloaded
         if img_path.exists():
-            logger.info(f"Skipping {img_name} (already exists)")
+            # logger.info(f"Skipping {img_name} (already exists)")
             return img_path
 
         try:
-            logger.info(f"Downloading {img_name}")
+            # logger.info(f"Downloading {img_name}")
             # Use streaming to avoid loading entire image into memory
             response = self.session.get(img_url, timeout=30, stream=True)
             response.raise_for_status()
