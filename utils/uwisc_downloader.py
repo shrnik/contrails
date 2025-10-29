@@ -9,6 +9,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import time
+from tqdm import tqdm
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -92,15 +93,17 @@ class ImagesDownloader:
         logger.info(f"Selected {len(selected_images)} images (every 6th)")
         downloaded_paths = []
 
-        # Download images concurrently
+        # Download images concurrently with progress bar
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_img = {executor.submit(self._download_single_image, img_name): img_name
                            for img_name in selected_images}
 
-            for future in as_completed(future_to_img):
-                img_path = future.result()
-                if img_path is not None:
-                    downloaded_paths.append(img_path)
+            with tqdm(total=len(selected_images), desc="Downloading images", unit="img") as pbar:
+                for future in as_completed(future_to_img):
+                    img_path = future.result()
+                    if img_path is not None:
+                        downloaded_paths.append(img_path)
+                    pbar.update(1)
 
         return downloaded_paths
 
