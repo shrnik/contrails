@@ -7,15 +7,15 @@ from typing import List
 from urllib.parse import urljoin
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ImagesDownloader:
-    def __init__(self, base_url: str = "https://metobs.ssec.wisc.edu/pub/cache/aoss/cameras/east/img/2025/01/09/orig/"):
-        self.base_url = base_url
-        self.images_dir = Path("downloaded_images/east")
-        self.images_dir.mkdir(exist_ok=True)
+    def __init__(self,date: str):
+        path = f"downloaded_images/east/{date}/"
+        os.makedirs(path, exist_ok=True)
+        self.images_dir = Path(path)
 
     def get_image_list(self) -> List[str]:
         """Fetch the list of available images from the server."""
@@ -60,7 +60,7 @@ class ImagesDownloader:
             logger.error(f"Error downloading {img_name}: {e}")
             return None
 
-    def download_images(self, max_workers: int = 10) -> List[Path]:
+    def download_images(self, base_url: str, max_workers: int = 10) -> List[Path]:
         """Download every 6th image from the server concurrently."""
         images = self.get_image_list()
         # Log the total number of images found
@@ -89,34 +89,17 @@ class ImagesDownloader:
 
         return downloaded_paths
 
-    def process_all(self):
-        """Complete processing pipeline."""
-        logger.info("Starting image processing pipeline...")
-        
-        # Step 1: Download images
-        logger.info("Step 1: Downloading images...")
-        image_paths = self.download_every_sixth_image()
-        
-        if not image_paths:
-            logger.error("No images downloaded, stopping pipeline")
-            return
-        
-        logger.info(f"Downloaded {len(image_paths)} images")
-        
-        # Step 2: Create embeddings
-        logger.info("Step 2: Creating embeddings...")
-        embeddings = self.create_image_embeddings(image_paths)
-        
-        # Step 3: Save to ChromaDB
-        logger.info("Step 3: Saving to ChromaDB...")
-        self.save_to_chromadb(image_paths, embeddings)
-        
-        logger.info("Pipeline completed successfully!")
-
-
 def main():
-    processor = ImagesDownloader()
-    processor.download_images()
+    # download images for october
+    BASE_URL = "https://metobs.ssec.wisc.edu/pub/cache/aoss/cameras/east/img/"
+    year = 2025
+    month = 10
+    for day in range(1, 25):
+        date_path = f"{year}/{month}/{day:02d}/orig/"
+        processor = ImagesDownloader(date=f"{year}-{month:02d}-{day:02d}")
+        processor.base_url = urljoin(BASE_URL, date_path)
+        logger.info(f"Processing images for date: {year}-{month:02d}-{day:02d}")
+        processor.download_images(processor.base_url)
 
 
 if __name__ == "__main__":

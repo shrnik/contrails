@@ -188,3 +188,54 @@ def calculate_fov_from_intrinsics(intrinsics, image_width, image_height, distort
 
     # return hfov, vfov, hfov_deg, vfov_deg
     return (hfov_deg.item(), vfov_deg.item())
+
+def image_to_gps(image_x, image_y, k_matrix, r_matrix, t_vector, dist_coeffs, camera_gps, distance_m=1000):
+    """
+    Convert image pixel coordinates to GPS coordinates at a fixed distance from camera.
+    
+    Args:
+        image_x, image_y: Pixel coordinates in the image
+        k_matrix: Camera intrinsics matrix (3x3)
+        r_matrix: Camera rotation matrix (3x3) 
+        t_vector: Camera translation vector (3x1)
+        dist_coeffs: Distortion coefficients
+        camera_gps: Camera GPS location [lat, lon, alt]
+        distance_m: Distance from camera in meters (default: 1000m)
+    
+    Returns:
+        [lat, lon, alt]: GPS coordinates of the point
+    """
+    # Convert image point to normalized camera coordinates
+    image_point = np.array([[image_x, image_y]], dtype=np.float32)
+    
+    # Undistort the image point
+    undistorted_points = cv2.undistortPoints(image_point, k_matrix, dist_coeffs)
+    
+    # Get normalized coordinates (in camera frame)
+    x_norm = undistorted_points[0, 0, 0]
+    y_norm = undistorted_points[0, 0, 1]
+    
+    # Create ray direction in camera coordinates
+    # Camera coordinates: X=right, Y=down, Z=forward
+    ray_camera = np.array([x_norm, y_norm, 1.0])
+    
+    # Normalize the ray direction to unit length
+    ray_camera_unit = ray_camera / np.linalg.norm(ray_camera)
+    
+    # Transform ray to world (ENU) coordinates
+    # R transforms from ENU to camera, so R.T transforms from camera to ENU
+    ray_world_unit = r_matrix.T @ ray_camera_unit
+    
+    # Get camera position in ENU coordinates (origin is at camera_gps)
+    camera_enu = -r_matrix.T @ t_vector.flatten()
+    
+    # Calculate the 3D point at fixed distance along the ray
+    point_enu = camera_enu + distance_m * ray_world_unit
+    
+    # Convert ENU to GPS coordinates
+    point_lat, point_lon, point_alt = pm.enu2geodetic(
+        point_enu[0], point_enu[1], point_enu[2],
+        camera_gps[0], camera_gps[1], camera_gps[2]
+    )
+    
+    return [point_lat, point_lon, point_alt]
