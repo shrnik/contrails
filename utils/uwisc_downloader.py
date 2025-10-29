@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
+import time
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -16,28 +17,38 @@ class ImagesDownloader:
         path = f"downloaded_images/east/{date}/"
         os.makedirs(path, exist_ok=True)
         self.images_dir = Path(path)
+        # Create a session for connection pooling and reuse
+        self.session = requests.Session()
+        # Configure session with connection pooling
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=30,
+            pool_maxsize=30,
+            max_retries=3
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
 
     def get_image_list(self) -> List[str]:
         """Fetch the list of available images from the server."""
         try:
-            response = requests.get(self.base_url, timeout=1000)
+            response = self.session.get(self.base_url, timeout=1000)
             response.raise_for_status()
-            
+
             # Extract image filenames using regex
             image_pattern = r'(\d{2}_\d{2}_\d{2}\.trig\+00\.jpg)'
             images = re.findall(image_pattern, response.text)
-            
+
             # Sort images to ensure consistent ordering
             images.sort()
             logger.info(f"Found {len(images)} images")
             return images
-            
+
         except Exception as e:
             logger.error(f"Error fetching image list: {e}")
             return []
 
     def _download_single_image(self, img_name: str) -> Path:
-        """Download a single image."""
+        """Download a single image using streaming for better memory efficiency."""
         img_url = urljoin(self.base_url, img_name)
         img_path = self.images_dir / img_name
 
@@ -48,11 +59,15 @@ class ImagesDownloader:
 
         try:
             logger.info(f"Downloading {img_name}")
-            response = requests.get(img_url, timeout=30)
+            # Use streaming to avoid loading entire image into memory
+            response = self.session.get(img_url, timeout=30, stream=True)
             response.raise_for_status()
 
+            # Write in chunks for better memory efficiency
             with open(img_path, 'wb') as f:
-                f.write(response.content)
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
 
             return img_path
 
@@ -60,7 +75,7 @@ class ImagesDownloader:
             logger.error(f"Error downloading {img_name}: {e}")
             return None
 
-    def download_images(self, base_url: str, max_workers: int = 10) -> List[Path]:
+    def download_images(self, base_url: str, max_workers: int = 30) -> List[Path]:
         """Download every 6th image from the server concurrently."""
         images = self.get_image_list()
         # Log the total number of images found
