@@ -4,8 +4,10 @@ import numpy as np
 from datetime import datetime, timedelta
 import pandas as pd
 import cv2
-
+import utils.projection_utils as projection_utils
 # --- FAST direction + speed from last 10s (endpoints only) ---
+
+
 def dir_speed_last10(hist_ts, hist_x, hist_y, min_span_s=3.0, min_disp_px=2.0):
     if len(hist_ts) < 2:
         return None
@@ -22,33 +24,38 @@ def dir_speed_last10(hist_ts, hist_x, hist_y, min_span_s=3.0, min_disp_px=2.0):
     return ux, uy, speed_px_s
 
 
-
 # --- Draw a trailing rectangle BEHIND (cx, cy) ---
 def draw_trailing_rect(img, cx, cy, ux, uy, length_px, width_px=200):
     px, py = -uy, ux
     halfW = width_px / 2.0
-    head_left  = (cx - px*halfW, cy - py*halfW)
+    head_left = (cx - px*halfW, cy - py*halfW)
     head_right = (cx + px*halfW, cy + py*halfW)
     tail_cx, tail_cy = (cx - ux*length_px, cy - uy*length_px)
-    tail_left  = (tail_cx - px*halfW, tail_cy - py*halfW)
+    tail_left = (tail_cx - px*halfW, tail_cy - py*halfW)
     tail_right = (tail_cx + px*halfW, tail_cy + py*halfW)
-    p1 = (max(0, min(head_left[0], img.shape[1])), max(0, min(head_left[1], img.shape[0])))
-    p2 = (max(0, min(head_right[0], img.shape[1])), max(0, min(head_right[1], img.shape[0])))
-    p3 = (max(0, min(tail_right[0], img.shape[1])), max(0, min(tail_right[1], img.shape[0])))
-    p4 = (max(0, min(tail_left[0], img.shape[1])), max(0, min(tail_left[1], img.shape[0])))
+    p1 = (max(0, min(head_left[0], img.shape[1])),
+          max(0, min(head_left[1], img.shape[0])))
+    p2 = (max(0, min(head_right[0], img.shape[1])),
+          max(0, min(head_right[1], img.shape[0])))
+    p3 = (max(0, min(tail_right[0], img.shape[1])),
+          max(0, min(tail_right[1], img.shape[0])))
+    p4 = (max(0, min(tail_left[0], img.shape[1])),
+          max(0, min(tail_left[1], img.shape[0])))
     poly = np.array([p1, p2, p3, p4], dtype=np.int32)
 
     # Draw arrow
-    tip  = (int(cx), int(cy))
-    base = (int(cx - ux*max(20, length_px*0.25)), int(cy - uy*max(20, length_px*0.25)))
+    # tip = (int(cx), int(cy))
+    # base = (int(cx - ux*max(20, length_px*0.25)),
+    #         int(cy - uy*max(20, length_px*0.25)))
 
-    return poly, (tip, base)
+    return poly, (0, 0)
+
 
 def get_directional_rectangle(img, df_filtered, timestamp, df_upsampled,
-                               length_px=200, width_px=70,
-                               color=(255, 0, 0), thickness=1,
-                               draw_arrow=False, fill=False):
-    
+                              length_px=200, width_px=70,
+                              color=(255, 0, 0), thickness=1,
+                              draw_arrow=False, fill=False):
+
     trail_seconds = 30
     min_len, max_len = 50, 500
     """
@@ -59,7 +66,6 @@ def get_directional_rectangle(img, df_filtered, timestamp, df_upsampled,
     - `timestamp` should be pandas.Timestamp (UTC ok).
     """
     out = img.copy()
-
 
     if not isinstance(timestamp, pd.Timestamp):
         timestamp = pd.to_datetime(timestamp, utc=True, errors='coerce')
@@ -97,12 +103,11 @@ def get_directional_rectangle(img, df_filtered, timestamp, df_upsampled,
         # --- scale length by apparent speed ---
         length = float(np.clip(speed_px_s * trail_seconds, min_len, max_len))
         if np.any(np.isnan([ux, uy, cx, cy])):
-                continue
+            continue
         rect, arrow = draw_trailing_rect(out, cx, cy, ux, uy,
-                                 length_px=length, width_px=width_px)
+                                         length_px=length, width_px=width_px)
         result[ident] = (rect, arrow, res)
     return result
-
 
 
 def normalize(vx, vy, eps=1e-9):
@@ -111,10 +116,12 @@ def normalize(vx, vy, eps=1e-9):
         return 1.0, 0.0  # default to +x if degenerate
     return vx / n, vy / n
 
+
 def angle180_from_vec(vx, vy):
     # Orientation modulo 180° (lines: θ == θ+180)
     a = math.degrees(math.atan2(vy, vx))  # [-180, 180)
     return a % 180.0
+
 
 def compute_dominant_line_angle(rect_dir_vec, edges_final):
     """
@@ -151,15 +158,17 @@ def compute_dominant_line_angle(rect_dir_vec, edges_final):
     if lines is None:
         return 0.0, []
     good_lines = []
-    for x1,y1,x2,y2 in lines[:,0]:
+    for x1, y1, x2, y2 in lines[:, 0]:
         ang = np.degrees(np.arctan2(y2-y1, x2-x1))
         if abs(norm(ang) - norm(rect_angle)) <= tolerance_deg:
-            good_lines.append((x1,y1,x2,y2))
+            good_lines.append((x1, y1, x2, y2))
     if not good_lines:
         return 0.0, []
-    lines_with_lengths = [(x1, y1, x2, y2, np.hypot(x2-x1, y2-y1)) for (x1,y1,x2,y2) in good_lines]
+    lines_with_lengths = [(x1, y1, x2, y2, np.hypot(x2-x1, y2-y1))
+                          for (x1, y1, x2, y2) in good_lines]
     score = len(good_lines)
     return score, lines_with_lengths
+
 
 def resize_rect_polygon(rect_poly: np.ndarray, delta_px: int) -> np.ndarray:
     """
@@ -187,7 +196,7 @@ def _compute_edges_for_rectangles(gray_blurred, rectangles_dict, border_px=7):
     """
     H, W = gray_blurred.shape[:2]
     edges_dict = {}
-    
+
     for ident, (rect_poly, arrow, direction_info) in rectangles_dict.items():
         # 1) Expand mask geometry by +border_px
         big_poly = resize_rect_polygon(rect_poly, +border_px)
@@ -203,7 +212,8 @@ def _compute_edges_for_rectangles(gray_blurred, rectangles_dict, border_px=7):
             # try p85–p95; or replace with your masked_otsu
             t = int(np.percentile(vals, 96))
         p95 = np.percentile(vals, 99.5)
-        high = max(int(p95), 60); low = int(0.25 * high)
+        high = max(int(p95), 60)
+        low = int(0.25 * high)
         roi_big = cv2.bitwise_and(gray_blurred, gray_blurred, mask=mask_big)
         _, roi_big = cv2.threshold(roi_big, t, 255, cv2.THRESH_TOZERO)
         edges_big = cv2.Canny(roi_big, low, high)
@@ -212,18 +222,18 @@ def _compute_edges_for_rectangles(gray_blurred, rectangles_dict, border_px=7):
         mask_small = np.zeros((H, W), dtype=np.uint8)
         cv2.fillPoly(mask_small, [rect_poly], 255)
         edges_final = cv2.bitwise_and(edges_big, edges_big, mask=mask_small)
-        
+
         edges_dict[ident] = (edges_final, rect_poly)
-    
+
     return edges_dict
 
 
-def apply_canny_to_rectangles(img, prev_img, rectangles_dict, 
-                              blur_kernel=(3, 3), 
+def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
+                              blur_kernel=(3, 3),
                               border_px=7):
     """
     Apply Canny edge detection to rectangular regions returned by get_directional_rectangle.
-    
+
     Args:
         img: Input image (BGR format)
         rectangles_dict: Dictionary from get_directional_rectangle with format:
@@ -234,7 +244,7 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
         overlay_edges: If True, overlay edges on original image; if False, return edge images
         edge_color: Color for edge visualization when overlay_edges=True (BGR format)
         border_px: Pixels to expand rectangle for edge detection to avoid edge artifacts (default: 7)
-    
+
     Returns:
         If overlay_edges=True: Image with edges overlaid
         If overlay_edges=False: Dictionary {ident: edge_data} for each aircraft
@@ -250,21 +260,21 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
         # gray_blurred = cv2.threshold(gray_blurred, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)[1]
     else:
         gray_blurred = gray
-    
+
     # Compute edges for all rectangles (shared logic)
-    edges_dict = _compute_edges_for_rectangles(gray_blurred, rectangles_dict, border_px)
-    
+    edges_dict = _compute_edges_for_rectangles(
+        gray_blurred, rectangles_dict, border_px)
+
     # Create output image and overlay all edges
     output = img.copy()
-    
+
     # for ident, (edges_final, rect_poly) in edges_dict.items():
     #     ys, xs = np.where(edges_final > 0)
     #     output[ys, xs] = edge_color
-    
 
     # Return individual edge images per aircraft with statistics
     edge_data = {}
-    
+
     for ident, (edges_final, rect_poly) in edges_dict.items():
         # Get bounding box of rectangle to crop ROI
         x, y, w, h = cv2.boundingRect(rect_poly)
@@ -278,11 +288,14 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
         best_angle = None
         score, lines_with_length = 0, []
         if np.count_nonzero(edges_cropped) > 0:
-            score, lines_with_length = compute_dominant_line_angle((ux, uy), edges_final)
+            score, lines_with_length = compute_dominant_line_angle(
+                (ux, uy), edges_final)
             # atleast 2 lines are greater than 40 px
-            good_lines_with_min_length = [length for *_, length in lines_with_length if length >= 40.0]
+            good_lines_with_min_length = [
+                length for *_, length in lines_with_length if length >= 40.0]
 
-            is_contrail = (score >= 2) and (len(good_lines_with_min_length) >= 2)
+            is_contrail = (score >= 2) and (
+                len(good_lines_with_min_length) >= 2)
 
         edge_data[ident] = {
             'edges': edges_cropped,
@@ -301,10 +314,10 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
 def calculate_edge_statistics(edge_data_dict):
     """
     Calculate statistics for edge detection results.
-    
+
     Args:
         edge_images_dict: Dictionary from apply_canny_to_rectangles (with overlay_edges=False)
-    
+
     Returns:
         DataFrame with edge statistics per aircraft
     """
@@ -320,14 +333,14 @@ def calculate_edge_statistics(edge_data_dict):
             'bbox_height': data['bbox'][3],
             'bbox_area': data['bbox'][2] * data['bbox'][3]
         })
-    
+
     return pd.DataFrame(stats)
 
 
 def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filtered, df_upsampled):
     """
     Process a single image: load, detect rectangles, apply Canny edge detection.
-    
+
     Args:
         img_path: Path to image file
         timestamp: Timestamp for this image (pandas.Timestamp)
@@ -336,7 +349,7 @@ def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filter
         draw_edges: Whether to draw detected edges
         lower_threshold: Canny lower threshold
         upper_threshold: Canny upper threshold
-    
+
     Returns:
         Processed image, rectangles dictionary, edge statistics
     """
@@ -344,17 +357,46 @@ def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filter
     img = cv2.imread(img_path)
     prev_img = cv2.imread(prev_img_path)
     if img is None or prev_img is None:
-        return None, None, None
-    
+        return None, None, None, None
+
     # Get directional rectangles
-    rectangles = get_directional_rectangle(img, df_filtered, timestamp, df_upsampled, length_px=200, width_px=100)
+    rectangles = get_directional_rectangle(
+        img, df_filtered, timestamp, df_upsampled, length_px=200, width_px=100)
     if len(rectangles) == 0:
-        return img, {}, pd.DataFrame()
-    
+        return img, {}, pd.DataFrame(), {}
+
     # Apply edge detection
-    img_output, edge_data, _ = apply_canny_to_rectangles(
+    img_output, edge_data, edges_dict = apply_canny_to_rectangles(
         img, prev_img, rectangles,
         blur_kernel=(3, 3),
     )
-    
-    return img_output, rectangles, edge_data
+
+    return img_output, rectangles, edge_data, edges_dict
+
+
+def get_flight_distance(gps_flight, gps_origin):
+    flight_ecef = projection_utils.gps_to_ecef(
+       gps_flight)
+    origin_ecef = projection_utils.gps_to_ecef(
+        gps_origin)
+    # Convert ECEF to ENU
+    distance = math.dist(flight_ecef, origin_ecef)
+    return distance
+
+
+def convert_texture_to_gps_points(texture, flight_gps, gps_origin, k_matrix, r_matrix, tvec, dist_coeffs=None):
+    ys, xs = np.where(texture > 0)
+    flight_distance = get_flight_distance(flight_gps, gps_origin)
+    # create an array [] of pixel points
+    pixel_points = np.array([[x, y] for y, x in zip(ys, xs)], dtype=np.float32)
+    gps_coords = projection_utils.image_to_gps(
+        image_points=pixel_points,
+        k_matrix=k_matrix,
+        r_matrix=r_matrix,
+        t_vector=tvec,
+        dist_coeffs=dist_coeffs,
+        camera_gps=gps_origin,
+        distance_m=flight_distance
+    )
+
+    return gps_coords

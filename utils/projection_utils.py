@@ -189,56 +189,86 @@ def calculate_fov_from_intrinsics(intrinsics, image_width, image_height, distort
     # return hfov, vfov, hfov_deg, vfov_deg
     return (hfov_deg.item(), vfov_deg.item())
 
-def image_to_gps(image_x, image_y, k_matrix, r_matrix, t_vector, dist_coeffs, camera_gps, distance_m=1000):
+def image_to_gps(image_points, k_matrix, r_matrix, t_vector, dist_coeffs, camera_gps, distance_m=1000):
     """
-    Convert image pixel coordinates to GPS coordinates at a fixed distance from camera.
-    
+    Convert one or multiple image pixel coordinates to GPS coordinates at a fixed distance from camera.
+
     Args:
-        image_x, image_y: Pixel coordinates in the image
+        image_points: array-like of shape (N,2) or (2,) with pixel coordinates [x, y]
         k_matrix: Camera intrinsics matrix (3x3)
-        r_matrix: Camera rotation matrix (3x3) 
-        t_vector: Camera translation vector (3x1)
-        dist_coeffs: Distortion coefficients
+        r_matrix: Camera rotation matrix (3x3)
+        t_vector: Camera translation vector (3,) or (3,1)
+        dist_coeffs: Distortion coefficients (or None)
         camera_gps: Camera GPS location [lat, lon, alt]
-        distance_m: Distance from camera in meters (default: 1000m)
-    
+        distance_m: Distance from camera in meters (scalar)
+
     Returns:
-        [lat, lon, alt]: GPS coordinates of the point
+        If input was a single point, returns [lat, lon, alt].
+        If input was multiple points, returns an (N, 3) NumPy array of [lat, lon, alt].
     """
-    # Convert image point to normalized camera coordinates
-    image_point = np.array([[image_x, image_y]], dtype=np.float32)
-    
-    # Undistort the image point
-    undistorted_points = cv2.undistortPoints(image_point, k_matrix, dist_coeffs)
-    
-    # Get normalized coordinates (in camera frame)
-    x_norm = undistorted_points[0, 0, 0]
-    y_norm = undistorted_points[0, 0, 1]
-    
-    # Create ray direction in camera coordinates
-    # Camera coordinates: X=right, Y=down, Z=forward
-    ray_camera = np.array([x_norm, y_norm, 1.0])
-    
-    # Normalize the ray direction to unit length
-    ray_camera_unit = ray_camera / np.linalg.norm(ray_camera)
-    
-    # Transform ray to world (ENU) coordinates
-    # R transforms from ENU to camera, so R.T transforms from camera to ENU
-    ray_world_unit = r_matrix.T @ ray_camera_unit
-    
-    # Get camera position in ENU coordinates (origin is at camera_gps)
-    camera_enu = -r_matrix.T @ t_vector.flatten()
-    
-    # Calculate the 3D point at fixed distance along the ray
-    point_enu = camera_enu + distance_m * ray_world_unit
-    
-    # Convert ENU to GPS coordinates
-    point_lat, point_lon, point_alt = pm.enu2geodetic(
-        point_enu[0], point_enu[1], point_enu[2],
+    pts = np.asarray(image_points, dtype=np.float32)
+    single_input = False
+    if pts.ndim == 1:
+        pts = pts.reshape(1, 2)
+        single_input = True
+    elif pts.ndim == 2 and pts.shape[1] != 2:
+        raise ValueError("image_points must have shape (N,2) or (2,)")
+
+    # Ensure distortion is a valid array for OpenCV
+    if dist_coeffs is None:
+        dist_coeffs = np.zeros((5, 1), dtype=np.float32)
+    else:
+        dist_coeffs = np.asarray(dist_coeffs, dtype=np.float32)
+
+    # Undistort points: input shape should be (N,1,2)
+    undistorted = cv2.undistortPoints(pts.reshape(-1, 1, 2), k_matrix, dist_coeffs)
+    # undistorted has shape (N,1,2)
+    x_norm = undistorted[:, 0, 0]
+    y_norm = undistorted[:, 0, 1]
+
+    # Rays in camera coordinates (X=right, Y=down, Z=forward)
+    rays_cam = np.column_stack((x_norm, y_norm, np.ones_like(x_norm)))  # (N,3)
+    # Normalize direction vectors
+    norms = np.linalg.norm(rays_cam, axis=1, keepdims=True)
+    rays_cam_unit = rays_cam / norms
+
+    # Transform rays to world (ENU) coordinates: R transforms ENU->cam, so R.T transforms cam->ENU
+    rays_world_unit = (r_matrix.T @ rays_cam_unit.T).T  # (N,3)
+
+    # Camera position in ENU (origin at camera_gps)
+    t_vec = np.asarray(t_vector).reshape(-1)
+    camera_enu = (-r_matrix.T @ t_vec)  # (3,)
+
+    # Compute points at fixed distance along each ray
+    point_enu = camera_enu[None, :] + distance_m * rays_world_unit  # (N,3)
+
+    # Convert ENU to geodetic (lat, lon, alt). pymap3d supports array inputs.
+    lats, lons, alts = pm.enu2geodetic(
+        point_enu[:, 0], point_enu[:, 1], point_enu[:, 2],
         camera_gps[0], camera_gps[1], camera_gps[2]
     )
-    
-    return [point_lat, point_lon, point_alt]
+
+    result = np.column_stack((lats, lons, alts))
+    if single_input:
+        return result[0].tolist()
+    return result
+
+
+def gps_to_ecef(point_gps):
+
+    # Define the transformation from Geodetic (EPSG:4979) to ECEF (EPSG:4978)
+    # always_xy=True ensures the transformer expects (longitude, latitude) order
+    transformer_geodetic_to_ecef = Transformer.from_crs(
+        "epsg:4979", "epsg:4978", always_xy=True)
+
+    # Perform the transformation
+    # Note: pyproj expects longitude, latitude, altitude order for transform
+    eX, eY, eZ = transformer_geodetic_to_ecef.transform(
+        point_gps[1], point_gps[0], point_gps[2])
+
+    # Stack the results into an Nx3 NumPy array
+    ecef_point = (eX, eY, eZ)
+    return ecef_point
 
 def load_camera_parameters(path):
     with open(path, 'r') as f:
