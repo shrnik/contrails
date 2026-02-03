@@ -31,40 +31,46 @@ def gps_to_camxy_vasha_fixed(lats, lons, alts, cam_k, cam_r, cam_t, camera_gps, 
     # CRITICAL FIX 1: Transform to camera coordinate system properly
     # Camera coordinates: X=right, Y=down, Z=forward (into scene)
     points_cam = (cam_r @ enu_points.T + cam_t).T  # Shape: (N, 3)
+# # 2. Calculate normalized coordinates (u, v)
+# These represent the position on a flat plane 1 unit in front of the lens
+    z_depth = points_cam[:, 2]
+    u_norm = points_cam[:, 0] / z_depth
+    v_norm = points_cam[:, 1] / z_depth
 
-    # CRITICAL FIX 2: Filter out points behind camera BEFORE projection
-    # Points with negative Z are behind the camera
-    behind_camera_mask = points_cam[:, 2] <= 0
+    r2 = u_norm**2 + v_norm**2
 
-    # Initialize output arrays
+    # 3. Apply a FOV (Field of View) Guard Rail
+    # For a standard lens, u_norm and v_norm rarely exceed 2.0 at the very edges.
+    # If the value is > 3.0, it's way outside the FOV and will cause distortion 'wrap-around'.
+    fov_mask = (z_depth > 1.0) & (np.abs(u_norm) < 2.5) & (np.abs(v_norm) < 2.5) & (r2 < 3)
+
     num_points = len(lats)
     image_x = np.full(num_points, np.nan)
     image_y = np.full(num_points, np.nan)
-    cam_distance = points_cam[:, 2]  # Z coordinate is the distance
-
-    # Only project points in front of camera
-    if np.any(~behind_camera_mask):
-        valid_points = enu_points[~behind_camera_mask]
-
-        # Project using OpenCV
+    
+    if np.any(fov_mask):
+        # Filter the points
+        valid_enu = enu_points[fov_mask]
+        
+        # Prepare transformation vectors for OpenCV
         rvec, _ = cv2.Rodrigues(cam_r)
-        tvec = cam_t.astype(np.float32)
+        tvec = cam_t.reshape(3, 1) # Ensure correct shape
 
-        if distortion is None:
-            distortion = np.zeros((5, 1), dtype=np.float32)
-
-        image_points, _ = cv2.projectPoints(
-            valid_points.astype(np.float32),
-            rvec, tvec, cam_k, distortion
+        # 3. Project only the valid points
+        # cv2.projectPoints handles the R and T transformation internally
+        img_pts, _ = cv2.projectPoints(
+            valid_enu.astype(np.float32), 
+            rvec, 
+            tvec, 
+            cam_k.astype(np.float32), 
+            distortion.astype(np.float32) if distortion is not None else None
         )
-        image_points = image_points.reshape(-1, 2)
+        
+        valid_indices = np.where(fov_mask)[0]
+        image_x[valid_indices] = img_pts[:, 0, 0]
+        image_y[valid_indices] = img_pts[:, 0, 1]
 
-        # Assign projected coordinates back to output arrays
-        valid_indices = np.where(~behind_camera_mask)[0]
-        image_x[valid_indices] = image_points[:, 0]
-        image_y[valid_indices] = image_points[:, 1]
-
-    return image_x, image_y, cam_distance
+    return image_x, image_y, points_cam[:, 2]
 
 def gps_to_ecef(points_gps):
     transformer_geodetic_to_ecef = Transformer.from_crs(

@@ -11,9 +11,10 @@ def clean_numeric(s: pd.Series) -> pd.Series:
     # finally, coerce to numeric
     return pd.to_numeric(s, errors='coerce')
 
-def upsample_aircraft(group: pd.DataFrame) -> pd.DataFrame:
+def upsample_aircraft(group):
     """
     Upsample a single aircraft's data to 1-second intervals using linear interpolation.
+    Only upsamples between consecutive points that are less than 5 minutes apart.
     Adds an 'isUpsampled' column to indicate interpolated vs original data.
     """
     # Sort by time
@@ -22,42 +23,76 @@ def upsample_aircraft(group: pd.DataFrame) -> pd.DataFrame:
     # Mark original data as not upsampled
     group['isUpsampled'] = False
     
-    # Get time range
-    start_time = group['time'].min()
-    end_time = group['time'].max()
+    # If only one point, return as is
+    if len(group) <= 1:
+        return group
     
-    # Create 1-second intervals
-    time_range = pd.date_range(start=start_time, end=end_time, freq='1s')
+    # Build list of dataframes for segments to upsample
+    segments = []
     
-    # Create new dataframe with all seconds
-    new_df = pd.DataFrame({'time': time_range})
+    for i in range(len(group)):
+        # Always include the original point
+        current_point = group.iloc[[i]].copy()
+        segments.append(current_point)
+        
+        # Check if we should upsample to the next point
+        if i < len(group) - 1:
+            time_gap = (group.iloc[i + 1]['time'] - group.iloc[i]['time']).total_seconds()
+            
+            # Only upsample if gap is less than 5 minutes (300 seconds) and greater than 1 second
+            if 1 < time_gap < 300:
+                # Create 1-second intervals between current and next point
+                start_time = group.iloc[i]['time']
+                end_time = group.iloc[i + 1]['time']
+                
+                # Create time range (exclude start and end as they're already in original data)
+                time_range = pd.date_range(start=start_time, end=end_time, freq='1s')[1:-1]
+                
+                if len(time_range) > 0:
+                    # Create interpolation dataframe with just these two points
+                    interp_df = group.iloc[[i, i + 1]].copy()
+                    
+                    # Create new dataframe with interpolated time points
+                    interp_points = pd.DataFrame({'time': time_range})
+                    
+                    # Add all columns from the first point as base
+                    for col in group.columns:
+                        if col != 'time':
+                            interp_points[col] = None
+                    
+                    # Concatenate the two boundary points with the empty interpolation points
+                    temp_df = pd.concat([interp_df, interp_points], ignore_index=True)
+                    temp_df = temp_df.sort_values('time').reset_index(drop=True)
+                    
+                    # Convert numeric columns to proper float dtype BEFORE interpolation
+                    numeric_cols_to_interpolate = ['lon', 'lat', 'alt', 'alt_gnss', 'heading', 
+                                                     'alt_meters', 'alt_gnss_meters', 'distance_m']
+                    
+                    for col in numeric_cols_to_interpolate:
+                        if col in temp_df.columns:
+                            temp_df[col] = pd.to_numeric(temp_df[col], errors='coerce')
+                            temp_df[col] = temp_df[col].interpolate(method='linear')
+                    
+                    # Forward fill categorical/string columns
+                    categorical_cols = ['source_id', 'source', 'transponder_id', 'orig', 'dest', 
+                                       'ident', 'aircraft_type', 'clock_datetime']
+                    
+                    for col in categorical_cols:
+                        if col in temp_df.columns:
+                            temp_df[col] = temp_df[col].fillna(method='ffill')
+                    
+                    # Mark interpolated points as upsampled (the boundary points already have False)
+                    temp_df.loc[temp_df['isUpsampled'].isna(), 'isUpsampled'] = True
+                    
+                    # Extract only the interpolated middle points (not the boundaries)
+                    interpolated_segment = temp_df.iloc[1:-1].copy()
+                    
+                    segments.append(interpolated_segment)
     
-    # Merge with original data
-    merged = new_df.merge(group, on='time', how='left')
+    # Concatenate all segments
+    result = pd.concat(segments, ignore_index=True)
     
-    # Convert numeric columns to proper float dtype BEFORE interpolation
-    numeric_cols_to_interpolate = ['lon', 'lat', 'alt', 'alt_gnss', 'heading', 
-                                     'alt_meters', 'alt_gnss_meters', 'distance_m']
-    
-    for col in numeric_cols_to_interpolate:
-        if col in merged.columns:
-            # Convert to numeric, forcing errors to NaN
-            merged[col] = pd.to_numeric(merged[col], errors='coerce')
-            # Interpolate
-            merged[col] = merged[col].interpolate(method='linear', limit_area='inside')
-    
-    # Fill isUpsampled: True for interpolated rows, False for original
-    merged['isUpsampled'] = merged['isUpsampled'].fillna(True)
-
-    # Forward fill categorical/string columns (like ident, aircraft_type, etc.)
-    categorical_cols = ['source_id', 'source', 'transponder_id', 'orig', 'dest', 
-                       'ident', 'aircraft_type', 'clock_datetime']
-    
-    for col in categorical_cols:
-        if col in merged.columns:
-            merged[col] = merged[col].fillna(method='ffill')
-
-    return merged
+    return result
 
 def get_upsampled_df_for_day(df: pd.DataFrame, max_range_m: float = 50000) -> pd.DataFrame:
     """Load CSV, filter for date, and upsample."""

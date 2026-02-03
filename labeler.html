@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contrail Labeler</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+        .sidebar {
+            width: 380px;
+            background: #16213e;
+            padding: 15px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+        }
+        .canvas-container {
+            flex: 1;
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #imageCanvas { z-index: 1; }
+        #overlayCanvas { z-index: 2; cursor: crosshair; }
+
+        .controls {
+            background: #16213e;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+        .slider-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #frameSlider {
+            flex: 1;
+            height: 8px;
+            -webkit-appearance: none;
+            background: #0f3460;
+            border-radius: 4px;
+            outline: none;
+        }
+        #frameSlider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            background: #e94560;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+        .btn-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        button:hover { transform: scale(1.02); }
+        .btn-nav { background: #0f3460; color: #fff; }
+        .btn-play { background: #e94560; color: #fff; min-width: 80px; }
+        .btn-play.playing { background: #4ecca3; }
+
+        .section-title {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .time-display {
+            font-size: 20px;
+            font-weight: bold;
+            color: #4ecca3;
+        }
+        .frame-info {
+            font-size: 12px;
+            color: #888;
+        }
+
+        /* Flight list - main focus */
+        .flight-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+        .flight-row {
+            background: #0f3460;
+            border-radius: 8px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .flight-row:hover {
+            background: #1a4a7a;
+        }
+        .flight-row.selected {
+            border-color: #e94560;
+            background: #1a3a5a;
+        }
+        .flight-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .flight-ident {
+            font-weight: bold;
+            font-size: 14px;
+            color: #fff;
+            cursor: pointer;
+        }
+        .flight-alt {
+            font-size: 12px;
+            color: #4ecca3;
+        }
+        .flight-labels {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+        .label-chip {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            cursor: pointer;
+            background: #2a2a4a;
+            color: #888;
+            border: 1px solid #3a3a5a;
+            transition: all 0.15s;
+        }
+        .label-chip:hover {
+            background: #3a3a6a;
+            color: #fff;
+        }
+        .label-chip.active {
+            color: #fff;
+            border-color: transparent;
+        }
+        .label-chip[data-label="Blocked"].active { background: #7f8c8d; }
+        .label-chip[data-label="Clear"].active { background: #3498db; }
+        .label-chip[data-label="Dissipate < 10"].active { background: #e67e22; }
+        .label-chip[data-label="Dissipate > 10"].active { background: #e74c3c; }
+        .label-chip[data-label="Persistent"].active { background: #9b59b6; }
+        .split-chip {
+            background: #e74c3c !important;
+            color: #fff !important;
+            border-color: #c0392b !important;
+        }
+        .split-chip:hover { background: #c0392b !important; }
+
+        .section-badge {
+            font-size: 9px;
+            background: #4ecca3;
+            color: #000;
+            padding: 2px 6px;
+            border-radius: 8px;
+            margin-left: 5px;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: auto;
+            padding-top: 10px;
+            border-top: 1px solid #0f3460;
+        }
+        .status { font-size: 12px; color: #4ecca3; }
+        .btn-save { background: #27ae60; color: #fff; }
+        .btn-download { background: #3498db; color: #fff; }
+
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        }
+        #speedSlider { width: 80px; height: 4px; }
+
+        .keyboard-hints {
+            font-size: 10px;
+            color: #555;
+            line-height: 1.6;
+        }
+        .keyboard-hints kbd {
+            background: #0f3460;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 10px;
+        }
+
+        .stats {
+            font-size: 11px;
+            color: #666;
+            display: flex;
+            gap: 15px;
+        }
+        .stats span { color: #4ecca3; }
+
+        .no-flights {
+            color: #666;
+            font-style: italic;
+            padding: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div>
+                <div class="time-display" id="timeDisplay">--:--:--</div>
+                <div class="frame-info" id="frameInfo">Frame 0 / 0</div>
+            </div>
+
+            <div class="stats" id="stats">
+                <div>Labeled: <span id="labeledCount">0</span></div>
+                <div>Total flights: <span id="totalFlights">0</span></div>
+            </div>
+
+            <div>
+                <div class="section-title">
+                    Flights in This Frame
+                    <span id="flightCount">0</span>
+                </div>
+                <div class="flight-list" id="flightList">
+                    <div class="no-flights">No flights in this frame</div>
+                </div>
+            </div>
+
+            <div class="keyboard-hints">
+                <kbd>Space</kbd> Play/Pause &nbsp;
+                <kbd>&larr;</kbd><kbd>&rarr;</kbd> Prev/Next &nbsp;
+                <kbd>J</kbd><kbd>L</kbd> -10/+10<br>
+                <kbd>1-5</kbd> Label &nbsp;
+                <kbd>&uarr;</kbd><kbd>&darr;</kbd> Select flight &nbsp;
+                <kbd>S</kbd> Split flight &nbsp;
+                <kbd>U</kbd> Next unlabeled
+            </div>
+
+            <div class="status-bar">
+                <span class="status" id="status">Ready</span>
+                <div>
+                    <button class="btn-nav" onclick="loadData()">Load JSON</button>
+                    <button class="btn-nav" onclick="goToFirstUnlabeled()">Next Unlabeled</button>
+                    <button class="btn-save" onclick="saveLabels()">Save</button>
+                    <button class="btn-download" onclick="downloadCSV()">CSV</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="main">
+            <div class="canvas-container" id="canvasContainer">
+                <canvas id="imageCanvas"></canvas>
+                <canvas id="overlayCanvas"></canvas>
+                <div id="welcomeOverlay" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:#1a1a2e;z-index:10;flex-direction:column;gap:20px;">
+                    <div style="font-size:24px;color:#4ecca3;">Contrail Labeler</div>
+                    <div style="color:#888;">Click "Load JSON" in the sidebar to load labeling data</div>
+                    <button class="btn-play" onclick="loadData()" style="font-size:18px;padding:15px 30px;">Load JSON File</button>
+                </div>
+            </div>
+            <div class="controls">
+                <div class="slider-row">
+                    <input type="range" id="frameSlider" min="0" max="100" value="0">
+                    <span id="frameNum">0</span>
+                </div>
+                <div class="btn-row">
+                    <button class="btn-nav" onclick="jump(-10)">-10</button>
+                    <button class="btn-nav" onclick="jump(-1)">&larr;</button>
+                    <button class="btn-play" id="playBtn" onclick="togglePlay()">Play</button>
+                    <button class="btn-nav" onclick="jump(1)">&rarr;</button>
+                    <button class="btn-nav" onclick="jump(10)">+10</button>
+                    <div class="speed-control">
+                        <span>Speed:</span>
+                        <input type="range" id="speedSlider" min="50" max="500" value="100">
+                        <span id="speedVal">100ms</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const LABELS = ['Blocked', 'Clear', 'Dissipate < 10', 'Dissipate > 10', 'Persistent'];
+
+        let data = null;
+        let currentFrame = 0;
+        let selectedFlightIdx = 0;
+        let isPlaying = false;
+        let playInterval = null;
+        let playSpeed = 100;
+        let imageCache = {};
+
+        const imageCanvas = document.getElementById('imageCanvas');
+        const overlayCanvas = document.getElementById('overlayCanvas');
+        const imageCtx = imageCanvas.getContext('2d');
+        const overlayCtx = overlayCanvas.getContext('2d');
+
+        // Load JSON data via file upload
+        function loadData() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+
+            input.onchange = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                try {
+                    const text = await file.text();
+                    data = JSON.parse(text);
+
+                    // Load saved labels from localStorage
+                    const saved = localStorage.getItem(`labels_${data.date}_${data.camera}`);
+
+                    if (saved) {
+                        // data.flights = JSON.parse(saved);
+                        const savedLabels = JSON.parse(saved);
+                        // Merge saved labels into current data
+                        data.flights.forEach(flight => {
+                            const savedFlight = savedLabels.find(f => (f.id || f.ident) === (flight.id || flight.ident) && f.section === flight.section);
+                            if (savedFlight) {
+                                flight.label = savedFlight.label;
+                                flight.notes = savedFlight.notes;
+                            }
+                        });
+                        setStatus('Loaded saved labels');
+                    }
+
+                    document.getElementById('frameSlider').max = data.total_frames - 1;
+                    document.getElementById('totalFlights').textContent = data.flights.length;
+                    document.getElementById('welcomeOverlay').style.display = 'none';
+                    updateStats();
+                    setStatus(`Loaded ${data.total_frames} frames from ${file.name}`);
+
+                    resizeCanvases();
+                    renderFrame();
+                } catch (e) {
+                    alert('Error loading JSON: ' + e.message);
+                }
+            };
+
+            input.click();
+        }
+
+        function resizeCanvases() {
+            const container = document.getElementById('canvasContainer');
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            imageCanvas.width = overlayCanvas.width = w;
+            imageCanvas.height = overlayCanvas.height = h;
+        }
+
+        async function renderFrame() {
+            if (!data) return;
+
+            const frame = data.frames[currentFrame];
+
+            // Update UI
+            document.getElementById('timeDisplay').textContent = frame.time_local;
+            document.getElementById('frameInfo').textContent = `Frame ${currentFrame + 1} / ${data.total_frames} | ${frame.time_utc}`;
+            document.getElementById('frameSlider').value = currentFrame;
+            document.getElementById('frameNum').textContent = currentFrame;
+            document.getElementById('flightCount').textContent = frame.flights.length;
+
+            // Load and draw image
+            const imgPath = `${data.image_base_path}/${frame.image_file}`;
+
+            let img = imageCache[imgPath];
+            if (!img) {
+                img = new Image();
+                img.src = imgPath;
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                });
+                imageCache[imgPath] = img;
+            }
+
+            // Draw image scaled to fit
+            const scale = Math.min(
+                imageCanvas.width / img.width,
+                imageCanvas.height / img.height
+            );
+            const w = img.width * scale;
+            const h = img.height * scale;
+            const x = (imageCanvas.width - w) / 2;
+            const y = (imageCanvas.height - h) / 2;
+
+            imageCtx.fillStyle = '#000';
+            imageCtx.fillRect(0, 0, imageCanvas.width, imageCanvas.height);
+            imageCtx.drawImage(img, x, y, w, h);
+
+            // Store scale info for click handling
+            overlayCanvas.dataset.scale = scale;
+            overlayCanvas.dataset.offsetX = x;
+            overlayCanvas.dataset.offsetY = y;
+
+            // Draw flight markers
+            overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+            frame.flights.forEach((flight, idx) => {
+                const fx = x + flight.x * scale;
+                const fy = y + flight.y * scale;
+
+                const isSelected = idx === selectedFlightIdx;
+                // Find the relevant section for this flight at current time
+                const sections = data.flights.filter(f => f.ident === flight.ident).sort((a, b) => a.section - b.section);
+                let flightData = sections[0]; // Default to first section
+                // Try to find section that matches current frame time
+                const currentTime = frame.time_local;
+                for (const section of sections) {
+                    if (currentTime >= section.time_appear && currentTime <= section.time_disappear) {
+                        flightData = section;
+                        break;
+                    }
+                }
+                const label = flightData?.label || '';
+
+                // Draw marker
+                overlayCtx.beginPath();
+                overlayCtx.arc(fx, fy, isSelected ? 8 : 5, 0, Math.PI * 2);
+
+                // Color by label
+                let color = '#f39c12'; // unlabeled
+                if (label === 'Blocked') color = '#7f8c8d';
+                else if (label === 'Clear') color = '#3498db';
+                else if (label === 'Dissipate < 10') color = '#e67e22';
+                else if (label === 'Dissipate > 10') color = '#e74c3c';
+                else if (label === 'Persistent') color = '#9b59b6';
+
+                overlayCtx.fillStyle = color;
+                overlayCtx.fill();
+
+                if (isSelected) {
+                    overlayCtx.strokeStyle = '#fff';
+                    overlayCtx.lineWidth = 3;
+                    overlayCtx.stroke();
+                }
+
+                // Draw label
+                overlayCtx.font = isSelected ? 'bold 14px sans-serif' : '12px sans-serif';
+                overlayCtx.fillStyle = '#fff';
+                overlayCtx.strokeStyle = '#000';
+                overlayCtx.lineWidth = 3;
+                const text = `${flight.ident} (${flight.alt_ft}ft)`;
+                overlayCtx.strokeText(text, fx + 15, fy + 5);
+                overlayCtx.fillText(text, fx + 15, fy + 5);
+            });
+
+            // Update flight list
+            updateFlightList(frame.flights);
+        }
+
+        function updateFlightList(flights) {
+            const container = document.getElementById('flightList');
+
+            if (flights.length === 0) {
+                container.innerHTML = '<div class="no-flights">No flights in this frame</div>';
+                return;
+            }
+
+            container.innerHTML = flights.map((flight, idx) => {
+                // Find all sections for this flight
+                const sections = data.flights.filter(f => f.ident === flight.ident).sort((a, b) => a.section - b.section);
+                const isSelected = idx === selectedFlightIdx;
+
+                // Build section rows
+                const sectionRows = sections.map(section => {
+                    const currentLabel = section.label || '';
+                    const sectionId = section.id || section.ident;
+                    const hasMultipleSections = sections.length > 1;
+
+                    return `
+                        <div class="section-row" style="margin-left: ${hasMultipleSections ? '10px' : '0'}; padding: 4px 0; border-left: ${hasMultipleSections ? '2px solid #4ecca3' : 'none'}; padding-left: ${hasMultipleSections ? '8px' : '0'}; margin-top: ${hasMultipleSections ? '4px' : '0'};">
+                            ${hasMultipleSections ? `<div style="font-size:10px;color:#4ecca3;margin-bottom:3px;">Section ${section.section}: ${section.time_appear} - ${section.time_disappear}</div>` : ''}
+                            <div class="flight-labels">
+                                ${LABELS.map(label => `
+                                    <span class="label-chip ${currentLabel === label ? 'active' : ''}"
+                                          data-label="${label}"
+                                          onclick="setLabel('${sectionId}', '${label}')">
+                                        ${label.replace('Dissipate', 'Diss.')}
+                                    </span>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                return `
+                    <div class="flight-row ${isSelected ? 'selected' : ''}" data-idx="${idx}">
+                        <div class="flight-header">
+                            <span class="flight-ident" onclick="selectFlight(${idx})">${flight.ident}</span>
+                            <span class="flight-alt">${flight.alt_ft} ft</span>
+                            ${sections.length > 1 ? `<span class="section-badge">${sections.length} sections</span>` : ''}
+                        </div>
+                        ${sectionRows}
+                        <div style="margin-top:6px;">
+                            <span class="label-chip split-chip" onclick="splitFlight('${flight.ident}')" title="Split flight at this frame">✂ Split here</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function selectFlight(idx) {
+            const frame = data.frames[currentFrame];
+            if (idx >= 0 && idx < frame.flights.length) {
+                selectedFlightIdx = idx;
+                renderFrame();
+            }
+        }
+
+        function setLabel(id, label) {
+            // id can be either ident or unique id for split flights
+            const flight = data.flights.find(f => (f.id || f.ident) === id);
+            if (flight) {
+                // Toggle off if clicking same label
+                flight.label = flight.label === label ? '' : label;
+                setStatus(`${flight.ident}${flight.section > 1 ? ' (sec ' + flight.section + ')' : ''}: ${flight.label || 'cleared'}`);
+                updateStats();
+                renderFrame();
+                saveLabels();
+            }
+        }
+
+        function splitFlight(ident) {
+            if (!data) return;
+
+            const frame = data.frames[currentFrame];
+            const currentTime = frame.time_local;
+
+            // Find all sections for this flight
+            const sections = data.flights.filter(f => f.ident === ident).sort((a, b) => a.section - b.section);
+
+            // Find which section the current frame falls into
+            // We need to find the section that contains this frame time
+            let sectionToSplit = null;
+            for (const section of sections) {
+                // Simple check - find section where current time is between appear and disappear
+                if (currentTime >= section.time_appear && currentTime <= section.time_disappear) {
+                    sectionToSplit = section;
+                    break;
+                }
+            }
+
+            // If no section found, use the last one
+            if (!sectionToSplit) {
+                sectionToSplit = sections[sections.length - 1];
+            }
+
+            // Get current altitude from frame data
+            const flightInFrame = frame.flights.find(f => f.ident === ident);
+            const currentAlt = flightInFrame ? flightInFrame.alt_ft : sectionToSplit.alt_max_ft;
+
+            // Create new section
+            const newSection = {
+                ...sectionToSplit,
+                id: `${ident}_${Date.now()}`, // Unique ID
+                section: sectionToSplit.section + 1,
+                time_appear: currentTime,
+                alt_min_ft: currentAlt,
+                label: '',
+                notes: ''
+            };
+
+            // Update original section - ends at current frame
+            sectionToSplit.time_disappear = currentTime;
+            sectionToSplit.alt_max_ft = currentAlt;
+            if (!sectionToSplit.id) {
+                sectionToSplit.id = `${ident}_sec${sectionToSplit.section}`;
+            }
+
+            // Update section numbers for any sections after the split
+            data.flights.forEach(f => {
+                if (f.ident === ident && f.section > sectionToSplit.section && f !== newSection) {
+                    f.section += 1;
+                }
+            });
+
+            // Add new section
+            data.flights.push(newSection);
+
+            // Sort flights by ident then section
+            data.flights.sort((a, b) => {
+                if (a.ident !== b.ident) return a.ident.localeCompare(b.ident);
+                return a.section - b.section;
+            });
+
+            setStatus(`Split ${ident} at ${currentTime} - now label both sections`);
+            updateStats();
+            renderFrame();
+            saveLabels();
+        }
+
+        function setLabelForSelected(label) {
+            const frame = data.frames[currentFrame];
+            if (frame.flights.length === 0) return;
+
+            const flight = frame.flights[selectedFlightIdx];
+            if (flight) {
+                setLabel(flight.ident, label);
+            }
+        }
+
+        function updateStats() {
+            const labeled = data.flights.filter(f => f.label).length;
+            const total = data.flights.length;
+            document.getElementById('labeledCount').textContent = `${labeled}/${total}`;
+        }
+
+        function saveLabels() {
+            if (!data) return;
+            localStorage.setItem(`labels_${data.date}_${data.camera}`, JSON.stringify(data.flights));
+        }
+
+        function downloadCSV() {
+            if (!data) return;
+
+            // Sort by ident then section before export
+            const sorted = [...data.flights].sort((a, b) => {
+                if (a.ident !== b.ident) return a.ident.localeCompare(b.ident);
+                return a.section - b.section;
+            });
+
+            const headers = ['ident', 'section', 'time_appear', 'time_disappear', 'alt_min_ft', 'alt_max_ft', 'label', 'notes'];
+            const rows = sorted.map(f =>
+                headers.map(h => `"${f[h] ?? ''}"`).join(',')
+            );
+
+            const csv = [headers.join(','), ...rows].join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `contrail_labels_${data.date}_${data.camera}.csv`;
+            a.click();
+
+            setStatus('Downloaded CSV');
+        }
+
+        function setStatus(msg) {
+            document.getElementById('status').textContent = msg;
+        }
+
+        function jump(delta) {
+            currentFrame = Math.max(0, Math.min(data.total_frames - 1, currentFrame + delta));
+            selectedFlightIdx = 0; // Reset selection when changing frames
+            renderFrame();
+        }
+
+        function goToFirstUnlabeled() {
+            if (!data) return;
+
+            // Find first unlabeled flight
+            const unlabeled = data.flights.find(f => !f.label);
+            if (!unlabeled) {
+                setStatus('All flights are labeled!');
+                return;
+            }
+
+            // Find the first frame where this flight appears
+            const targetTime = unlabeled.time_appear;
+            let targetFrameIdx = 0;
+
+            for (let i = 0; i < data.frames.length; i++) {
+                const frame = data.frames[i];
+                // Check if this flight is in this frame
+                const flightInFrame = frame.flights.find(f => f.ident === unlabeled.ident);
+                if (flightInFrame) {
+                    targetFrameIdx = i;
+                    break;
+                }
+            }
+
+            // Navigate to the frame
+            currentFrame = targetFrameIdx;
+
+            // Find and select the flight in the frame's flight list
+            const frame = data.frames[currentFrame];
+            const flightIdx = frame.flights.findIndex(f => f.ident === unlabeled.ident);
+            selectedFlightIdx = flightIdx >= 0 ? flightIdx : 0;
+
+            setStatus(`Jumped to unlabeled: ${unlabeled.ident}`);
+            renderFrame();
+        }
+
+        function togglePlay() {
+            isPlaying = !isPlaying;
+            const btn = document.getElementById('playBtn');
+            btn.textContent = isPlaying ? 'Pause' : 'Play';
+            btn.classList.toggle('playing', isPlaying);
+
+            if (isPlaying) {
+                playInterval = setInterval(() => {
+                    if (currentFrame >= data.total_frames - 1) {
+                        currentFrame = 0;
+                    } else {
+                        currentFrame++;
+                    }
+                    selectedFlightIdx = 0;
+                    renderFrame();
+                }, playSpeed);
+            } else {
+                clearInterval(playInterval);
+            }
+        }
+
+        // Event listeners
+        document.getElementById('frameSlider').addEventListener('input', (e) => {
+            currentFrame = parseInt(e.target.value);
+            selectedFlightIdx = 0;
+            renderFrame();
+        });
+
+        document.getElementById('speedSlider').addEventListener('input', (e) => {
+            playSpeed = parseInt(e.target.value);
+            document.getElementById('speedVal').textContent = playSpeed + 'ms';
+            if (isPlaying) {
+                clearInterval(playInterval);
+                playInterval = setInterval(() => {
+                    currentFrame = (currentFrame + 1) % data.total_frames;
+                    selectedFlightIdx = 0;
+                    renderFrame();
+                }, playSpeed);
+            }
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+
+            const frame = data?.frames[currentFrame];
+
+            switch(e.key) {
+                case ' ': e.preventDefault(); togglePlay(); break;
+                case 'ArrowLeft': jump(-1); break;
+                case 'ArrowRight': jump(1); break;
+                case 'j': case 'J': jump(-10); break;
+                case 'l': case 'L': jump(10); break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    if (frame && frame.flights.length > 0) {
+                        selectedFlightIdx = (selectedFlightIdx - 1 + frame.flights.length) % frame.flights.length;
+                        renderFrame();
+                    }
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    if (frame && frame.flights.length > 0) {
+                        selectedFlightIdx = (selectedFlightIdx + 1) % frame.flights.length;
+                        renderFrame();
+                    }
+                    break;
+                case '1': setLabelForSelected('Blocked'); break;
+                case '2': setLabelForSelected('Clear'); break;
+                case '3': setLabelForSelected('Dissipate < 10'); break;
+                case '4': setLabelForSelected('Dissipate > 10'); break;
+                case '5': setLabelForSelected('Persistent'); break;
+                case '0': case 'Backspace':
+                    // Clear label
+                    if (frame && frame.flights[selectedFlightIdx]) {
+                        const sections = data.flights.filter(f => f.ident === frame.flights[selectedFlightIdx].ident);
+                        sections.forEach(s => setLabel(s.id || s.ident, ''));
+                    }
+                    break;
+                case 's': case 'S':
+                    // Split selected flight
+                    if (frame && frame.flights[selectedFlightIdx]) {
+                        splitFlight(frame.flights[selectedFlightIdx].ident);
+                    }
+                    break;
+                case 'u': case 'U':
+                    goToFirstUnlabeled();
+                    break;
+            }
+        });
+
+        // Click on canvas to select flight
+        overlayCanvas.addEventListener('click', (e) => {
+            if (!data) return;
+
+            const rect = overlayCanvas.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+
+            const scale = parseFloat(overlayCanvas.dataset.scale);
+            const offsetX = parseFloat(overlayCanvas.dataset.offsetX);
+            const offsetY = parseFloat(overlayCanvas.dataset.offsetY);
+
+            const frame = data.frames[currentFrame];
+
+            // Find clicked flight
+            let closestIdx = -1;
+            let closestDist = 30;
+
+            frame.flights.forEach((flight, idx) => {
+                const fx = offsetX + flight.x * scale;
+                const fy = offsetY + flight.y * scale;
+                const dist = Math.sqrt((clickX - fx) ** 2 + (clickY - fy) ** 2);
+
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    closestIdx = idx;
+                }
+            });
+
+            if (closestIdx >= 0) {
+                selectFlight(closestIdx);
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            resizeCanvases();
+            renderFrame();
+        });
+
+        // Initialize - show welcome message
+        setStatus('Click "Load JSON" to start');
+    </script>
+</body>
+</html>
