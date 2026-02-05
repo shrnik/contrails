@@ -281,7 +281,7 @@
             <div class="status-bar">
                 <span class="status" id="status">Ready</span>
                 <div>
-                    <button class="btn-nav" onclick="loadData()">Load JSON</button>
+                    <button class="btn-nav" onclick="loadData()">Load Folder</button>
                     <button class="btn-nav" onclick="goToFirstUnlabeled()">Next Unlabeled</button>
                     <button class="btn-save" onclick="saveLabels()">Save</button>
                     <button class="btn-download" onclick="downloadCSV()">CSV</button>
@@ -295,8 +295,9 @@
                 <canvas id="overlayCanvas"></canvas>
                 <div id="welcomeOverlay" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:#1a1a2e;z-index:10;flex-direction:column;gap:20px;">
                     <div style="font-size:24px;color:#4ecca3;">Contrail Labeler</div>
-                    <div style="color:#888;">Click "Load JSON" in the sidebar to load labeling data</div>
-                    <button class="btn-play" onclick="loadData()" style="font-size:18px;padding:15px 30px;">Load JSON File</button>
+                    <div style="color:#888;">Select a folder containing the JSON file and images</div>
+                    <div style="color:#666;font-size:12px;">The folder should have a .json file and all image files</div>
+                    <button class="btn-play" onclick="loadData()" style="font-size:18px;padding:15px 30px;">Select Folder</button>
                 </div>
             </div>
             <div class="controls">
@@ -330,31 +331,51 @@
         let playInterval = null;
         let playSpeed = 100;
         let imageCache = {};
+        let imageFiles = {}; // Map of filename -> File object
 
         const imageCanvas = document.getElementById('imageCanvas');
         const overlayCanvas = document.getElementById('overlayCanvas');
         const imageCtx = imageCanvas.getContext('2d');
         const overlayCtx = overlayCanvas.getContext('2d');
 
-        // Load JSON data via file upload
+        // Load data from a folder containing JSON and images
         function loadData() {
             const input = document.createElement('input');
             input.type = 'file';
-            input.accept = '.json';
+            input.webkitdirectory = true;
+            input.multiple = true;
 
             input.onchange = async (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
+                const files = Array.from(e.target.files);
+                if (files.length === 0) return;
 
                 try {
-                    const text = await file.text();
+                    // Find JSON file in the folder
+                    const jsonFile = files.find(f => f.name.endsWith('.json'));
+                    if (!jsonFile) {
+                        alert('No JSON file found in the selected folder');
+                        return;
+                    }
+
+                    // Build map of image files (by filename only, ignoring subdirectories)
+                    imageFiles = {};
+                    files.forEach(f => {
+                        if (f.type.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f.name)) {
+                            // Use just the filename as key
+                            imageFiles[f.name] = f;
+                        }
+                    });
+
+                    setStatus(`Found ${Object.keys(imageFiles).length} images...`);
+
+                    // Load JSON
+                    const text = await jsonFile.text();
                     data = JSON.parse(text);
 
                     // Load saved labels from localStorage
                     const saved = localStorage.getItem(`labels_${data.date}_${data.camera}`);
 
                     if (saved) {
-                        // data.flights = JSON.parse(saved);
                         const savedLabels = JSON.parse(saved);
                         // Merge saved labels into current data
                         data.flights.forEach(flight => {
@@ -371,12 +392,12 @@
                     document.getElementById('totalFlights').textContent = data.flights.length;
                     document.getElementById('welcomeOverlay').style.display = 'none';
                     updateStats();
-                    setStatus(`Loaded ${data.total_frames} frames from ${file.name}`);
+                    setStatus(`Loaded ${data.total_frames} frames, ${Object.keys(imageFiles).length} images from folder`);
 
                     resizeCanvases();
                     renderFrame();
                 } catch (e) {
-                    alert('Error loading JSON: ' + e.message);
+                    alert('Error loading data: ' + e.message);
                 }
             };
 
@@ -403,18 +424,29 @@
             document.getElementById('frameNum').textContent = currentFrame;
             document.getElementById('flightCount').textContent = frame.flights.length;
 
-            // Load and draw image
-            const imgPath = `${data.image_base_path}/${frame.image_file}`;
+            // Load and draw image from local file
+            const imageFileName = frame.image_file;
 
-            let img = imageCache[imgPath];
+            let img = imageCache[imageFileName];
             if (!img) {
+                const file = imageFiles[imageFileName];
+                if (!file) {
+                    console.error(`Image not found: ${imageFileName}`);
+                    setStatus(`Image not found: ${imageFileName}`);
+                    return;
+                }
+
                 img = new Image();
-                img.src = imgPath;
+                const objectUrl = URL.createObjectURL(file);
+                img.src = objectUrl;
                 await new Promise((resolve, reject) => {
-                    img.onload = resolve;
+                    img.onload = () => {
+                        URL.revokeObjectURL(objectUrl); // Clean up
+                        resolve();
+                    };
                     img.onerror = reject;
                 });
-                imageCache[imgPath] = img;
+                imageCache[imageFileName] = img;
             }
 
             // Draw image scaled to fit
@@ -857,7 +889,7 @@
         });
 
         // Initialize - show welcome message
-        setStatus('Click "Load JSON" to start');
+        setStatus('Click "Select Folder" to start');
     </script>
 </body>
 </html>
