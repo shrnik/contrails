@@ -4,6 +4,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import pandas as pd
 import cv2
+from skimage.filters import frangi
 import utils.projection_utils as projection_utils
 # --- FAST direction + speed from last 10s (endpoints only) ---
 
@@ -228,9 +229,125 @@ def _compute_edges_for_rectangles(gray_blurred, rectangles_dict, border_px=7):
     return edges_dict
 
 
+def _compute_frangi_for_rectangles(gray_blurred, rectangles_dict, border_px=7,
+                                    sigmas=(1, 2, 3), ridge_threshold=0.01):
+    """
+    Helper function to compute Frangi ridge filter response for each rectangle.
+    Returns a dictionary: {ident: (ridge_binary, rect_poly)}
+    """
+    H, W = gray_blurred.shape[:2]
+    edges_dict = {}
+
+    # Normalize once to float [0, 1] for skimage
+    img_float = gray_blurred.astype(np.float32) / 255.0
+
+    for ident, (rect_poly, arrow, direction_info) in rectangles_dict.items():
+        big_poly = resize_rect_polygon(rect_poly, +border_px)
+
+        mask_big = np.zeros((H, W), dtype=np.uint8)
+        cv2.fillPoly(mask_big, [big_poly], 255)
+
+        if gray_blurred[mask_big > 0].size == 0:
+            edges_dict[ident] = (np.zeros((H, W), dtype=np.uint8), rect_poly)
+            continue
+
+        # Zero out everything outside the expanded ROI so Frangi only sees the patch
+        roi_float = img_float.copy()
+        roi_float[mask_big == 0] = 0.0
+
+        # Frangi vesselness — black_ridges=False for bright contrails on dark sky
+        response = frangi(roi_float, sigmas=sigmas, black_ridges=False)
+
+        # Normalize to [0, 1] and threshold
+        resp_max = response.max()
+        if resp_max > 0:
+            response = response / resp_max
+        ridge_binary = (response > ridge_threshold).astype(np.uint8) * 255
+
+        # Keep only pixels inside the original (un-expanded) rectangle
+        mask_small = np.zeros((H, W), dtype=np.uint8)
+        cv2.fillPoly(mask_small, [rect_poly], 255)
+        edges_final = cv2.bitwise_and(ridge_binary, ridge_binary, mask=mask_small)
+
+        edges_dict[ident] = (edges_final, rect_poly)
+
+    return edges_dict
+
+
+def apply_frangi_to_rectangles(img, prev_img, rectangles_dict,
+                                blur_kernel=(3, 3),
+                                border_px=7,
+                                sigmas=(1, 2, 3),
+                                ridge_threshold=0.01):
+    """
+    Apply Frangi ridge filter detection to rectangular regions returned by
+    get_directional_rectangle. Shares the same Hough-based scoring as the
+    Canny pipeline.
+
+    Args:
+        img: Input image (BGR)
+        prev_img: Previous frame (BGR) — temporal diff is used as input
+        rectangles_dict: {ident: (rect_poly, arrow, direction_info)}
+        blur_kernel: Gaussian blur kernel applied to the diff before Frangi
+        border_px: Pixels to expand rectangle for detection to avoid boundary effects
+        sigmas: Tuple of scales passed to skimage.filters.frangi
+        ridge_threshold: Normalised response threshold (0–1) to binarise the Frangi output
+
+    Returns:
+        output image, edge_data dict, edges_dict
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    prev_gray = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
+
+    diff = cv2.absdiff(gray, prev_gray)
+    if blur_kernel is not None and blur_kernel[0] > 0:
+        gray_blurred = cv2.GaussianBlur(diff, blur_kernel, 0)
+    else:
+        gray_blurred = diff
+
+    edges_dict = _compute_frangi_for_rectangles(
+        gray_blurred, rectangles_dict, border_px, sigmas, ridge_threshold)
+
+    output = img.copy()
+    edge_data = {}
+
+    for ident, (edges_final, rect_poly) in edges_dict.items():
+        x, y, w, h = cv2.boundingRect(rect_poly)
+        direction_info = rectangles_dict[ident][2]
+        ux, uy, speed_px_s = direction_info
+        roi_cropped = gray_blurred[y:y+h, x:x+w]
+        edges_cropped = edges_final[y:y+h, x:x+w]
+
+        is_contrail = False
+        best_angle = None
+        score, lines_with_length = 0, []
+        if np.count_nonzero(edges_cropped) > 0:
+            score, lines_with_length = compute_dominant_line_angle(
+                (ux, uy), edges_final)
+            good_lines_with_min_length = [
+                length for *_, length in lines_with_length if length >= 40.0]
+            is_contrail = (score >= 2) and (len(good_lines_with_min_length) >= 2)
+
+        edge_data[ident] = {
+            'edges': edges_cropped,
+            'roi': roi_cropped,
+            'bbox': (x, y, w, h),
+            'edge_pixel_count': np.count_nonzero(edges_cropped),
+            'is_making_contrails': is_contrail,
+            'best_line_angle': best_angle,
+            'score': score,
+            'lines': lines_with_length,
+            'edge_density': np.count_nonzero(edges_cropped) / (w * h) if w * h > 0 else 0,
+        }
+
+    return output, edge_data, edges_dict
+
+
 def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
                               blur_kernel=(3, 3),
-                              border_px=7):
+                              border_px=7,
+                              min_line_length=40.0,
+                              ):
     """
     Apply Canny edge detection to rectangular regions returned by get_directional_rectangle.
 
@@ -290,9 +407,9 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
         if np.count_nonzero(edges_cropped) > 0:
             score, lines_with_length = compute_dominant_line_angle(
                 (ux, uy), edges_final)
-            # atleast 2 lines are greater than 40 px
+            # atleast 2 lines are greater than min_line_length
             good_lines_with_min_length = [
-                length for *_, length in lines_with_length if length >= 40.0]
+                length for *_, length in lines_with_length if length >= min_line_length]
 
             is_contrail = (score >= 2) and (
                 len(good_lines_with_min_length) >= 2)
@@ -337,7 +454,7 @@ def calculate_edge_statistics(edge_data_dict):
     return pd.DataFrame(stats)
 
 
-def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filtered, df_upsampled):
+def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filtered, df_upsampled, min_line_length=40.0,):
     """
     Process a single image: load, detect rectangles, apply Canny edge detection.
 
@@ -369,6 +486,7 @@ def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filter
     img_output, edge_data, edges_dict = apply_canny_to_rectangles(
         img, prev_img, rectangles,
         blur_kernel=(3, 3),
+        min_line_length=min_line_length,
     )
 
     return img_output, rectangles, edge_data, edges_dict

@@ -61,6 +61,7 @@ def upsample_aircraft(group):
                             interp_points[col] = None
                     
                     # Concatenate the two boundary points with the empty interpolation points
+                    interp_points = interp_points.dropna(axis=1, how='all')
                     temp_df = pd.concat([interp_df, interp_points], ignore_index=True)
                     temp_df = temp_df.sort_values('time').reset_index(drop=True)
                     
@@ -79,7 +80,7 @@ def upsample_aircraft(group):
                     
                     for col in categorical_cols:
                         if col in temp_df.columns:
-                            temp_df[col] = temp_df[col].fillna(method='ffill')
+                            temp_df[col] = temp_df[col].ffill().infer_objects(copy=False)
                     
                     # Mark interpolated points as upsampled (the boundary points already have False)
                     temp_df.loc[temp_df['isUpsampled'].isna(), 'isUpsampled'] = True
@@ -150,3 +151,28 @@ def get_upsampled_df_for_day(df: pd.DataFrame, max_range_m: float = 50000) -> pd
         print(nan_rows[['ident', 'time', 'lat', 'lon', 'alt_gnss_meters']])
     
     return df_upsampled
+
+
+
+# right an adapter for data
+# timestamp,icao,registration,flight,lat,lon,altitude_baro,alt_geom,ground_speed,track_degrees,vertical_rate,aircraft_type,description,operator,squawk,category,source_type
+
+def read_adsblol_csv(path: str, origin_gps) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.columns = df.columns.str.strip()
+    df['time'] = pd.to_datetime(df['timestamp'])
+    df['alt_gnss_meters'] = df['alt_geom'] * 0.3048
+    df['transponder_id'] = df['icao']
+    # Some rows within the same flight may be missing 'flight' — propagate within each transponder+registration group
+    df['flight'] = df.groupby(['icao', 'registration'])['flight'].transform(lambda s: s.ffill().bfill())
+    df['ident'] = df['flight']
+    df['distance_m'] = haversine_km(df['lat'], df['lon'], origin_gps[0], origin_gps[1]) * 1000
+    return df
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance in km between two lat/lon points."""
+    R = 6371.0
+    dlat = np.radians(lat2 - lat1)
+    dlon = np.radians(lon2 - lon1)
+    a = np.sin(dlat / 2) ** 2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon / 2) ** 2
+    return R * 2 * np.arcsin(np.sqrt(a))

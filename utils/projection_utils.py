@@ -37,12 +37,10 @@ def gps_to_camxy_vasha_fixed(lats, lons, alts, cam_k, cam_r, cam_t, camera_gps, 
     u_norm = points_cam[:, 0] / z_depth
     v_norm = points_cam[:, 1] / z_depth
 
-    r2 = u_norm**2 + v_norm**2
-
     # 3. Apply a FOV (Field of View) Guard Rail
     # For a standard lens, u_norm and v_norm rarely exceed 2.0 at the very edges.
     # If the value is > 3.0, it's way outside the FOV and will cause distortion 'wrap-around'.
-    fov_mask = (z_depth > 1.0) & (np.abs(u_norm) < 2.5) & (np.abs(v_norm) < 2.5) & (r2 < 3)
+    fov_mask = (z_depth > 1.0) & (np.abs(u_norm) < 1.2) & (np.abs(v_norm) < 1.2)
 
     num_points = len(lats)
     image_x = np.full(num_points, np.nan)

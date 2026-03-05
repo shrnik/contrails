@@ -108,15 +108,36 @@ class ImagesDownloader:
         return downloaded_paths
 
 def main():
-    # download images for october
+    import argparse
+    from datetime import date, timedelta
+
     BASE_URL = "https://metobs.ssec.wisc.edu/pub/cache/aoss/cameras/east/img/"
-    year = 2025
-    month = 10
-    for day in range(1, 25):
-        date_path = f"{year}/{month}/{day:02d}/orig/"
-        processor = ImagesDownloader(date=f"{year}-{month:02d}-{day:02d}")
+
+    parser = argparse.ArgumentParser(description="Download UWisc camera images.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--dates", nargs="+", metavar="YYYY-MM-DD",
+                       help="One or more specific dates (e.g. 2025-03-13 2025-03-15)")
+    group.add_argument("--start", metavar="YYYY-MM-DD",
+                       help="Start date of a range (inclusive)")
+    parser.add_argument("--end", metavar="YYYY-MM-DD",
+                        help="End date of a range (inclusive, required with --start)")
+    args = parser.parse_args()
+
+    if args.start:
+        if not args.end:
+            parser.error("--end is required when --start is specified")
+        start = date.fromisoformat(args.start)
+        end = date.fromisoformat(args.end)
+        dates = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    else:
+        dates = [date.fromisoformat(d) for d in args.dates]
+
+    for d in dates:
+        date_str = d.strftime("%Y-%m-%d")
+        date_path = f"{d.year}/{d.month:02d}/{d.day:02d}/orig/"
+        processor = ImagesDownloader(date=date_str)
         processor.base_url = urljoin(BASE_URL, date_path)
-        logger.info(f"Processing images for date: {year}-{month:02d}-{day:02d}")
+        logger.info(f"Processing images for date: {date_str}")
         processor.download_images(processor.base_url)
 
 
