@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 import cv2
 import os
+import torch
+from PIL import Image
+from transformers import CLIPProcessor, CLIPModel
 
 import utils.adsb_utils as adsb_utils
 from utils.db_utils import ContrailDatabase
@@ -32,25 +35,27 @@ def make_batch(ident, timestamp, gps_points, camera_name):
     return df
 
 def run_contrail_pipeline_uwisc(date_str, camera_side='east'):
+    year, month, day = date_str.split('-')
 
-    adsb_csv_path = "./adsb_flightpings_MadisonWI_2025-10-01.csv"
+    adsb_csv_path = f"/Users/shrenikborad/pless/easy_adsb/data/madison_pings_{year}_{month}_{day}.csv"
     camera_params_path = f"./uwisc/{camera_side}/camera_params.json"
-    base_dir = f'./downloaded_images/{camera_side}/{date_str}'
+    base_dir = f'/Users/shrenikborad/Downloads/NNDL/images_uwisc/east/{date_str}/{camera_side}'
     camera_name = f"uwisc_{camera_side}"
 
     contrails_db = ContrailDatabase(f"contrails_uwisc.duckdb")
 
-    df = pd.read_csv(adsb_csv_path)
+    intrinsics, distortion, rvec, tvec, origin_gps = proj_utils.load_camera_parameters(camera_params_path)
+
+    # df = pd.read_csv(adsb_csv_path)
+    df = adsb_utils.read_adsblol_csv(adsb_csv_path, origin_gps=origin_gps)
     from_dt = pd.to_datetime(f"{date_str} 06:00:00").tz_localize('America/Chicago').tz_convert('UTC')
-    to_dt = pd.to_datetime(f"{date_str} 19:00:00").tz_localize('America/Chicago').tz_convert('UTC')
+    to_dt = pd.to_datetime(f"{date_str} 10:00:00").tz_localize('America/Chicago').tz_convert('UTC')
     df['time'] = pd.to_datetime(df['time'])
     df = df[(df['time'] >= from_dt) & (df['time'] < to_dt)]
-    print(df.describe())
-    df_upsampled = adsb_utils.get_upsampled_df_for_day(df, max_range_m=50000)
+    df_upsampled = adsb_utils.get_upsampled_df_for_day(df, max_range_m=80000)
 
 
     # Load Camera Parameters
-    intrinsics, distortion, rvec, tvec, origin_gps = proj_utils.load_camera_parameters(camera_params_path)
 
     image_x, image_y, cam_distance = proj_utils.gps_to_camxy_vasha_fixed(
         df_upsampled['lat'].values,
@@ -71,7 +76,7 @@ def run_contrail_pipeline_uwisc(date_str, camera_side='east'):
     image_df = get_image_data_uwisc(base_dir, date_str)
     image_df = image_df[(image_df['time'] >= from_dt) & (image_df['time'] < to_dt)]
     # Define video parameters
-    output_path = f'output_video_{date_str}_{camera_name}_cleaned_background_removal_long.mp4'
+    output_path = f'output_video_{date_str}_{camera_name}_cleaned_background_removal_long_frangi.mp4'
     img_def = cv2.imread(f"{base_dir}/{image_df.iloc[0]['image_file']}")
     frame_height, frame_width = img_def.shape[0], img_def.shape[1]
     fps = 10  # frames per second
@@ -82,7 +87,7 @@ def run_contrail_pipeline_uwisc(date_str, camera_side='east'):
     # csv with time and ident of flights that made contrails
     flights_with_contrails = []
 
-    toProcess = image_df[:500]
+    toProcess = image_df
     for idx, row in tqdm(toProcess.iterrows(), total=len(toProcess), desc="Processing images"):
 
         # img = cv2.imread(f"/Users/shrenikborad/Downloads/NNDL/images_uwisc/east/2025-10-01/east/{row['image_file']}")
@@ -118,25 +123,25 @@ def run_contrail_pipeline_uwisc(date_str, camera_side='east'):
                 x, y, w, h = edge_data[ident]['bbox']
                 roi_img = img_o[y:y+h, x:x+w]
                 flight_gps = row_to_append[['lat', 'lon', 'alt_gnss_meters']].values[0]
-                gps_points = detection_utils.convert_texture_to_gps_points(edges_dict[ident][0], 
-                                                                           flight_gps,
-                                                                           k_matrix=intrinsics, 
-                                                                           dist_coeffs=distortion,
-                                                                           r_matrix=rvec,
-                                                                           tvec=tvec,
-                                                                           gps_origin=origin_gps)
-                batch_df = make_batch(ident, row['time'], gps_points, camera_name)
-                contrails_db.insert_batch(batch_df)
-                if roi_img.size != 0:
-                    # show roi inline in plt
-                    roi_img_path = f"contrail_images/{date_str}/{camera_name}_contrail_{ident}_{row['time'].strftime('%Y%m%d_%H%M%S')}.jpg"
-                    # check if directory exists else create
-                    os.makedirs(os.path.dirname(roi_img_path), exist_ok=True)
-                    iswrite = cv2.imwrite(roi_img_path, roi_img)
-                    print(f"Written ROI image to {roi_img_path}: {iswrite}")
-                    # print(f"Saved contrail ROI image to {roi_img_path}")
-                    row_to_append = row_to_append.copy()
-                    row_to_append['contrail_image_path'] = roi_img_path
+                # gps_points = detection_utils.convert_texture_to_gps_points(edges_dict[ident][0], 
+                #                                                            flight_gps,
+                #                                                            k_matrix=intrinsics, 
+                #                                                            dist_coeffs=distortion,
+                #                                                            r_matrix=rvec,
+                #                                                            tvec=tvec,
+                #                                                            gps_origin=origin_gps)
+                # batch_df = make_batch(ident, row['time'], gps_points, camera_name)
+                # contrails_db.insert_batch(batch_df)
+                # if roi_img.size != 0:
+                #     # show roi inline in plt
+                #     roi_img_path = f"contrail_images/{date_str}/{camera_name}_contrail_{ident}_{row['time'].strftime('%Y%m%d_%H%M%S')}.jpg"
+                #     # check if directory exists else create
+                #     os.makedirs(os.path.dirname(roi_img_path), exist_ok=True)
+                #     iswrite = cv2.imwrite(roi_img_path, roi_img)
+                #     print(f"Written ROI image to {roi_img_path}: {iswrite}")
+                #     # print(f"Saved contrail ROI image to {roi_img_path}")
+                #     row_to_append = row_to_append.copy()
+                #     row_to_append['contrail_image_path'] = roi_img_path
                 lines = edge_data[ident]["lines"]
                 longest_line = max(lines, key=lambda x: x[4]) if lines else None
                 if longest_line:
@@ -171,8 +176,8 @@ def run_contrail_pipeline_uwisc(date_str, camera_side='east'):
 
 
 def main():
-    for day in range(1, 10):
-        date_str = f"2025-10-{day:02d}"
-        run_contrail_pipeline_uwisc(date_str)
+    for day in range(9, 10):
+        date_str = f"2025-01-{day:02d}"
+        run_contrail_pipeline_uwisc(date_str,camera_side="east")
 if __name__ == "__main__":
     main()
