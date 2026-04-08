@@ -176,8 +176,14 @@ def run_contrail_pipeline_uwisc(date_str, camera_side='east'):
 
 
 def main():
-    for day in range(9, 10):
-        date_str = f"2025-01-{day:02d}"
-        run_contrail_pipeline_uwisc(date_str,camera_side="east")
+    import argparse
+    parser = argparse.ArgumentParser(description="Run contrail detection pipeline for UWisc camera.")
+    parser.add_argument("dates", nargs="+", metavar="DATE", help="Date(s) to process in YYYY-MM-DD format")
+    parser.add_argument("--camera-side", default="east", choices=["east", "south", "west", "north"], help="Camera side (default: east)")
+    args = parser.parse_args()
+
+    for date_str in args.dates:
+        run_contrail_pipeline_uwisc(date_str, camera_side=args.camera_side)
+
 if __name__ == "__main__":
     main()
