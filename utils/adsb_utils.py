@@ -75,11 +75,8 @@ def upsample_aircraft(group):
                             temp_df[col] = temp_df[col].interpolate(method='linear')
                     
                     # Forward fill categorical/string columns
-                    categorical_cols = ['source_id', 'source', 'transponder_id', 'orig', 'dest',
-                                       'ident', 'aircraft_type', 'clock_datetime',
-                                       'timestamp', 'icao', 'registration', 'flight',
-                                       'ground_speed', 'track_degrees', 'vertical_rate',
-                                       'description', 'operator', 'squawk', 'category', 'source_type']
+                    categorical_cols = ['source_id', 'source', 'transponder_id', 'orig', 'dest', 
+                                       'ident', 'aircraft_type', 'clock_datetime']
                     
                     for col in categorical_cols:
                         if col in temp_df.columns:
