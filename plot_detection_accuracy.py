@@ -75,7 +75,7 @@ def plot_scatter(df: pd.DataFrame, date_str: str, save_path: str = None, show: b
 
 
 def plot_heatmap(df: pd.DataFrame, date_str: str, bin_size: str = '30min',
-                 detection_multiplier: int = 5, save_path: str = None, show: bool = True):
+                 detection_multiplier: int = 1, save_path: str = None, show: bool = True):
     fl_min = (df['avg_fl'].min() // 10) * 10
     fl_max = ((df['avg_fl'].max() // 10) + 1) * 10
     fl_bins = np.arange(fl_min, fl_max + 10, 10)
@@ -141,6 +141,50 @@ def plot_heatmap(df: pd.DataFrame, date_str: str, bin_size: str = '30min',
     return fig
 
 
+def plot_confusion_matrix(df: pd.DataFrame, date_str: str, save_path: str = None, show: bool = True):
+    counts = {r: (df['result'] == r).sum() for r in ('TP', 'FP', 'FN', 'TN')}
+    matrix = np.array([[counts['TP'], counts['FN']],
+                        [counts['FP'], counts['TN']]])
+
+    total = matrix.sum()
+    precision = counts['TP'] / (counts['TP'] + counts['FP']) if (counts['TP'] + counts['FP']) > 0 else 0
+    recall    = counts['TP'] / (counts['TP'] + counts['FN']) if (counts['TP'] + counts['FN']) > 0 else 0
+    f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    accuracy  = (counts['TP'] + counts['TN']) / total if total > 0 else 0
+
+    print(f"Confusion Matrix:\n{matrix}")
+    print(f"Precision: {precision:.2f}, Recall: {recall:.2f}, F1 Score: {f1:.2f}, Accuracy: {accuracy:.2f}")
+    fig, ax = plt.subplots(figsize=(5, 4))
+    im = ax.imshow(matrix, cmap='Blues')
+
+    ax.set_xticks([0, 1])
+    ax.set_yticks([0, 1])
+    ax.set_xticklabels(['Predicted\nPositive', 'Predicted\nNegative'], fontsize=11)
+    ax.set_yticklabels(['Actual\nPositive', 'Actual\nNegative'], fontsize=11)
+
+    for i in range(2):
+        for j in range(2):
+            label = ['TP', 'FN', 'FP', 'TN'][i * 2 + j]
+            ax.text(j, i, f'{label}\n{matrix[i, j]}',
+                    ha='center', va='center', fontsize=13, fontweight='bold',
+                    color='white' if matrix[i, j] > matrix.max() * 0.5 else 'black')
+
+    ax.set_title(f'Confusion Matrix — {date_str}', fontsize=13, fontweight='bold', pad=12)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    metrics_text = f'Precision: {precision:.2f}   Recall: {recall:.2f}   F1: {f1:.2f}   Accuracy: {accuracy:.2f}'
+    fig.text(0.5, 0.01, metrics_text, ha='center', fontsize=10, color='#333333')
+
+    plt.tight_layout(rect=[0, 0.06, 1, 1])
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Confusion matrix saved to {save_path}")
+    if show:
+        plt.show()
+    return fig
+
+
 def main():
     parser = argparse.ArgumentParser(description='Plot contrail detection accuracy')
     parser.add_argument('--labels', required=True, help='Path to ground truth labels CSV')
@@ -156,12 +200,14 @@ def main():
         os.makedirs(args.save_dir, exist_ok=True)
     df = load_and_merge(args.labels, args.predictions, args.date)
 
-    scatter_save = f"{args.save_dir}/scatter_{args.date}.png" if args.save_dir else None
-    heatmap_save = f"{args.save_dir}/heatmap_{args.date}.png" if args.save_dir else None
+    scatter_save  = f"{args.save_dir}/scatter_{args.date}.png"  if args.save_dir else None
+    heatmap_save  = f"{args.save_dir}/heatmap_{args.date}.png"  if args.save_dir else None
+    confmat_save  = f"{args.save_dir}/confmat_{args.date}.png"  if args.save_dir else None
 
     plot_scatter(df, args.date, save_path=scatter_save)
     plot_heatmap(df, args.date, bin_size=args.bin_size,
                  detection_multiplier=args.detection_multiplier, save_path=heatmap_save)
+    plot_confusion_matrix(df, args.date, save_path=confmat_save)
 
 
 if __name__ == '__main__':
