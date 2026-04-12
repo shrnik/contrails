@@ -34,7 +34,8 @@ def make_batch(ident, timestamp, gps_points, camera_name):
     df['camera_name'] = camera_name
     return df
 
-def run_contrail_pipeline_uwisc(date_str, camera_side='east'):
+def run_contrail_pipeline_uwisc(date_str, camera_side='east', detector='canny',
+                                 yolo_model_path=None, yolo_conf=0.25):
     year, month, day = date_str.split('-')
 
     adsb_csv_path = f"/Users/shrenikborad/pless/easy_adsb/data/madison_pings_{year}_{month}_{day}.csv"
@@ -75,6 +76,16 @@ def run_contrail_pipeline_uwisc(date_str, camera_side='east'):
 
     image_df = get_image_data_uwisc(base_dir, date_str)
     image_df = image_df[(image_df['time'] >= from_dt) & (image_df['time'] < to_dt)]
+
+    # Load YOLO model if needed
+    yolo_model = None
+    if detector == 'yolo':
+        from ultralytics import YOLO
+        if yolo_model_path is None:
+            raise ValueError("--yolo-model-path is required when using --detector yolo")
+        print(f"Loading YOLO model from {yolo_model_path}...")
+        yolo_model = YOLO(yolo_model_path)
+
     # Define video parameters
     output_path = f'output_video_{date_str}_{camera_name}_cleaned_background_removal_long_frangi.mp4'
     img_def = cv2.imread(f"{base_dir}/{image_df.iloc[0]['image_file']}")
@@ -101,7 +112,18 @@ def run_contrail_pipeline_uwisc(date_str, camera_side='east'):
             prev_img_path = f"{base_dir}/{image_df.iloc[idx-1]['image_file']}"
         else:
             prev_img_path = curr_img_path
-        img_o, rectangles, edge_data, edges_dict= detection_utils.process_image_with_canny_edges(f"{base_dir}/{row['image_file']}",
+        if detector == 'yolo':
+            img_o, rectangles, edge_data, edges_dict = detection_utils.process_image_with_yolo(
+                f"{base_dir}/{row['image_file']}",
+                yolo_model=yolo_model,
+                timestamp=row['time'],
+                df_filtered=df_filtered,
+                df_upsampled=df_upsampled,
+                conf=yolo_conf,
+                angle_tolerance_deg=16,
+            )
+        else:
+            img_o, rectangles, edge_data, edges_dict = detection_utils.process_image_with_canny_edges(f"{base_dir}/{row['image_file']}",
                                     prev_img_path=prev_img_path,
                                     timestamp=row['time'],
                                     df_filtered=df_filtered,
@@ -180,10 +202,18 @@ def main():
     parser = argparse.ArgumentParser(description="Run contrail detection pipeline for UWisc camera.")
     parser.add_argument("dates", nargs="+", metavar="DATE", help="Date(s) to process in YYYY-MM-DD format")
     parser.add_argument("--camera-side", default="east", choices=["east", "south", "west", "north"], help="Camera side (default: east)")
+    parser.add_argument("--detector", default="canny", choices=["canny", "yolo"],
+                        help="Detection method: canny (edge-based) or yolo (segmentation)")
+    parser.add_argument("--yolo-model-path", type=str, default=None,
+                        help="Path to trained YOLO seg weights (required for --detector yolo)")
+    parser.add_argument("--yolo-conf", type=float, default=0.25,
+                        help="YOLO confidence threshold (default: 0.25)")
     args = parser.parse_args()
 
     for date_str in args.dates:
-        run_contrail_pipeline_uwisc(date_str, camera_side=args.camera_side)
+        run_contrail_pipeline_uwisc(date_str, camera_side=args.camera_side,
+                                     detector=args.detector, yolo_model_path=args.yolo_model_path,
+                                     yolo_conf=args.yolo_conf)
 
 if __name__ == "__main__":
     main()

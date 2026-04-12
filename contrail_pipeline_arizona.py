@@ -12,7 +12,8 @@ import  utils.detection_utils as detection_utils
 from tqdm import tqdm
 
 
-def run_contrail_pipeline_arizona(date_str, base_dir=None, camera_params_path=None, adsb_csv_path=None):
+def run_contrail_pipeline_arizona(date_str, base_dir=None, camera_params_path=None, adsb_csv_path=None,
+                                   detector='canny', yolo_model_path=None, yolo_conf=0.25):
     show_edges = True
     store_contrail_rois = False
     camera_name = "arizona"
@@ -22,6 +23,7 @@ def run_contrail_pipeline_arizona(date_str, base_dir=None, camera_params_path=No
     camera_params_path = camera_params_path or "/Users/shrenikborad/pless/groundcam-contrail-detection/calibration_data/uni_az/camera_params.json"
     adsb_csv_path = adsb_csv_path or f"/Users/shrenikborad/pless/easy_adsb/data/arizona_{year}_{month}_{day}.csv"
 
+    print(adsb_csv_path, "row count:", sum(1 for _ in open(adsb_csv_path)))
     image_df = get_image_data_arizona(base_dir)
 
     intrinsics, distortion, rvec, tvec, origin_gps = proj_utils.load_camera_parameters(camera_params_path)
@@ -49,6 +51,15 @@ def run_contrail_pipeline_arizona(date_str, base_dir=None, camera_params_path=No
     df_upsampled['cam_distance'] = cam_distance
     image_df = image_df[(image_df['time'] >= start_time) & (image_df['time'] < end_time)]
 
+    # Load YOLO model if needed
+    yolo_model = None
+    if detector == 'yolo':
+        from ultralytics import YOLO
+        if yolo_model_path is None:
+            raise ValueError("--yolo-model-path is required when using --detector yolo")
+        print(f"Loading YOLO model from {yolo_model_path}...")
+        yolo_model = YOLO(yolo_model_path)
+
     # Define video parameters
     output_path = f'output_video_{date_str}_{camera_name}_cleaned_background_removal_long.mp4'
     img_def = cv2.imread(f"{base_dir}/{image_df.iloc[0]['image_file']}")
@@ -60,16 +71,27 @@ def run_contrail_pipeline_arizona(date_str, base_dir=None, camera_params_path=No
     video_writer = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
     flights_with_contrails = []
 
-    toProcess = image_df
+    toProcess = image_df.reset_index(drop=True)
     for idx, row in tqdm(toProcess.iterrows(), total=len(toProcess), desc="Processing images"):
         df_filtered = df_upsampled[df_upsampled['time'] == row['time']]
         curr_img_path = f"{base_dir}/{row['image_file']}"
         prev_img_path = None
         if idx > 0:
-            prev_img_path = f"{base_dir}/{image_df.iloc[idx-1]['image_file']}"
+            prev_img_path = f"{base_dir}/{toProcess.iloc[idx-1]['image_file']}"
         else:
             prev_img_path = curr_img_path
-        img_o, rectangles, edge_data, edges_dict = detection_utils.process_image_with_canny_edges(f"{base_dir}/{row['image_file']}",
+        if detector == 'yolo':
+            img_o, rectangles, edge_data, edges_dict = detection_utils.process_image_with_yolo(
+                f"{base_dir}/{row['image_file']}",
+                yolo_model=yolo_model,
+                timestamp=row['time'],
+                df_filtered=df_filtered,
+                df_upsampled=df_upsampled,
+                conf=yolo_conf,
+                angle_tolerance_deg=16,
+            )
+        else:
+            img_o, rectangles, edge_data, edges_dict = detection_utils.process_image_with_canny_edges(f"{base_dir}/{row['image_file']}",
                                     prev_img_path=prev_img_path,
                                     timestamp=row['time'],
                                     df_filtered=df_filtered,
@@ -128,13 +150,22 @@ def run_contrail_pipeline_arizona(date_str, base_dir=None, camera_params_path=No
 
 def main():
     parser = argparse.ArgumentParser(description="Run contrail detection pipeline for Arizona camera.")
-    parser.add_argument("date", help="Date to process in YYYY-MM-DD format (e.g. 2026-01-19)")
+    parser.add_argument("dates", help="Date to process in YYYY-MM-DD format (e.g. 2026-01-19)")
     parser.add_argument("--base-dir", help="Base directory containing images (default: arizona_images/<date>/cam2)")
     parser.add_argument("--camera-params", dest="camera_params_path", help="Path to camera_params.json")
     parser.add_argument("--adsb-csv", dest="adsb_csv_path", help="Path to ADS-B CSV file")
+    parser.add_argument("--detector", default="canny", choices=["canny", "yolo"],
+                        help="Detection method: canny (edge-based) or yolo (segmentation)")
+    parser.add_argument("--yolo-model-path", type=str, default=None,
+                        help="Path to trained YOLO seg weights (required for --detector yolo)")
+    parser.add_argument("--yolo-conf", type=float, default=0.25,
+                        help="YOLO confidence threshold (default: 0.25)")
     args = parser.parse_args()
 
-    run_contrail_pipeline_arizona(args.date, args.base_dir, args.camera_params_path, args.adsb_csv_path)
+    for date_str in args.dates.split():
+        run_contrail_pipeline_arizona(date_str, args.base_dir, args.camera_params_path, args.adsb_csv_path,
+                                      detector=args.detector, yolo_model_path=args.yolo_model_path,
+                                      yolo_conf=args.yolo_conf)
 
 if __name__ == "__main__":
     main()
