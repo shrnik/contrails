@@ -420,9 +420,39 @@ def _check_mask_alignment(mask_pixels_yx, direction_vec, angle_tolerance_deg=16.
     return is_aligned, mask_angle, angle_diff
 
 
+def _measure_width_length_ratio(mask_pixels_yx, direction_vec):
+    """
+    Measure the width/length ratio of a mask relative to the flight direction.
+    New contrails are elongated (low ratio); old spread contrails are wide (high ratio).
+
+    Args:
+        mask_pixels_yx: (N, 2) array of (y, x) pixel coordinates.
+        direction_vec: (ux, uy) aircraft direction vector.
+
+    Returns:
+        ratio: width / length (IQR-based). 0.0 if degenerate.
+        width: perpendicular spread (IQR).
+        length: along-track spread (IQR).
+    """
+    if len(mask_pixels_yx) < 4:
+        return 0.0, 0.0, 0.0
+    ux, uy = direction_vec
+    # Along-track and perpendicular axes
+    perp_x, perp_y = -uy, ux
+    xs, ys = mask_pixels_yx[:, 1], mask_pixels_yx[:, 0]
+    proj_along = xs * ux + ys * uy
+    proj_perp = xs * perp_x + ys * perp_y
+    length = np.percentile(proj_along, 75) - np.percentile(proj_along, 25)
+    width = np.percentile(proj_perp, 75) - np.percentile(proj_perp, 25)
+    if length < 1.0:
+        return float('inf'), float(width), float(length)
+    return float(width / length), float(width), float(length)
+
+
 def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_upsampled,
                             conf=0.25, iou_overlap_thresh=0.05, angle_tolerance_deg=16.0,
-                            rect_width_px=25):
+                            rect_width_px=25, max_width_length_ratio=0.5,
+                            max_overlap_frac=0.8):
     """
     Process a single image using YOLO segmentation instead of Canny edges.
     Runs YOLO on the full image, then for each aircraft checks:
@@ -460,8 +490,8 @@ def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_ups
     if len(rectangles) == 0:
         return img, {}, {}, None
 
-    # Run YOLO segmentation on the full image
-    results = yolo_model.predict(img_path, conf=conf, verbose=False)
+    # Run YOLO segmentation at full image resolution
+    results = yolo_model.predict(img_path, conf=conf, verbose=False, imgsz=(H, W))
     result = results[0]
 
     # Collect individual masks at image resolution
@@ -501,6 +531,8 @@ def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_ups
         best_overlap_frac = 0.0
         best_angle_diff = None
         best_mask_angle = None
+        best_perp_width = None
+        wl_ratio = None
         is_contrail = False
         aligned_lines = []  # for visualization, store fitted line endpoints
 
@@ -512,6 +544,8 @@ def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_ups
 
             overlap_frac = overlap_pixels / rect_pixels
             if overlap_frac < iou_overlap_thresh:
+                continue
+            if overlap_frac > max_overlap_frac:
                 continue
 
             # Get mask pixel coordinates inside the rectangle for alignment check
@@ -527,6 +561,11 @@ def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_ups
                 best_mask_angle = mask_angle
 
             if is_aligned:
+                # Reject wide/spread contrails (likely old, not from this aircraft)
+                wl_ratio, perp_width, along_length = _measure_width_length_ratio(mask_pts, (ux, uy))
+                if wl_ratio > max_width_length_ratio:
+                    continue
+                best_perp_width = perp_width
                 is_contrail = True
                 # Build a fitted-line segment for visualization
                 pts_xy = np.stack([xs, ys], axis=1).astype(np.float32).reshape(-1, 1, 2)
@@ -569,6 +608,8 @@ def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_ups
             'edge_density': best_overlap_frac,
             'overlap_fraction': best_overlap_frac,
             'angle_diff': best_angle_diff,
+            'perpendicular_width': best_perp_width,
+            'width_length_ratio': wl_ratio if is_contrail else None,
         }
 
     return img_output, rectangles, edge_data, result
