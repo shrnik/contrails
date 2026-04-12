@@ -532,7 +532,7 @@ def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_ups
                 pts_xy = np.stack([xs, ys], axis=1).astype(np.float32).reshape(-1, 1, 2)
                 line = cv2.fitLine(pts_xy, cv2.DIST_L2, 0, 0.01, 0.01)
                 vx, vy = float(line[0][0]), float(line[1][0])
-                x0, y0 = float(line[2]), float(line[3])
+                x0, y0 = float(line[2][0]), float(line[3][0])
                 # Extend line across the overlap region
                 t_vals = (xs - x0) * vx + (ys - y0) * vy
                 t_min, t_max = t_vals.min(), t_vals.max()
