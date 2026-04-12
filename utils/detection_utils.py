@@ -45,11 +45,11 @@ def draw_trailing_rect(img, cx, cy, ux, uy, length_px, width_px=200):
     poly = np.array([p1, p2, p3, p4], dtype=np.int32)
 
     # Draw arrow
-    # tip = (int(cx), int(cy))
-    # base = (int(cx - ux*max(20, length_px*0.25)),
-    #         int(cy - uy*max(20, length_px*0.25)))
+    tip = (int(cx), int(cy))
+    base = (int(cx - ux*max(20, length_px*0.25)),
+            int(cy - uy*max(20, length_px*0.25)))
 
-    return poly, (0, 0)
+    return poly, (tip, base)
 
 
 def get_directional_rectangle(img, df_filtered, timestamp, df_upsampled,
@@ -124,7 +124,7 @@ def angle180_from_vec(vx, vy):
     return a % 180.0
 
 
-def compute_dominant_line_angle(rect_dir_vec, edges_final):
+def compute_dominant_line_angle(rect_dir_vec, edges_final, angle_tolerance_deg=8.0):
     """
     Compute the dominant line angle from Hough lines within the given edge map,
     filtering lines that align with the rectangle direction vector.
@@ -137,7 +137,7 @@ def compute_dominant_line_angle(rect_dir_vec, edges_final):
         best_angle: Dominant line angle in degrees (None if not found).
         angle_offset_from_rect: Signed offset from rectangle direction in degrees (None if not found).
     """
-    tolerance_deg = 8.0  # degrees
+    tolerance_deg = angle_tolerance_deg  # degrees
     # ---- Inputs you already have ----
     # ux, uy: rectangle direction vector components (image coords: +x right, +y down)
     ux, uy = rect_dir_vec  # e.g., (ux, uy) from your data
@@ -233,6 +233,7 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
                               blur_kernel=(3, 3),
                               border_px=7,
                               min_line_length=40.0,
+                              angle_tolerance_deg=8.0
                               ):
     """
     Apply Canny edge detection to rectangular regions returned by get_directional_rectangle.
@@ -292,13 +293,11 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
         score, lines_with_length = 0, []
         if np.count_nonzero(edges_cropped) > 0:
             score, lines_with_length = compute_dominant_line_angle(
-                (ux, uy), edges_final)
+                (ux, uy), edges_final, angle_tolerance_deg=angle_tolerance_deg)
             # atleast 2 lines are greater than min_line_length
             good_lines_with_min_length = [
                 length for *_, length in lines_with_length if length >= min_line_length]
-
-            is_contrail = (score >= 2) and (
-                len(good_lines_with_min_length) >= 2)
+            is_contrail = (score >= 1) and (len(good_lines_with_min_length) >= 1)
 
         edge_data[ident] = {
             'edges': edges_cropped,
@@ -340,7 +339,7 @@ def calculate_edge_statistics(edge_data_dict):
     return pd.DataFrame(stats)
 
 
-def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filtered, df_upsampled, min_line_length=40.0,):
+def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filtered, df_upsampled, min_line_length=40.0, angle_tolerance_deg=8.0):
     """
     Process a single image: load, detect rectangles, apply Canny edge detection.
 
@@ -373,9 +372,206 @@ def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filter
         img, prev_img, rectangles,
         blur_kernel=(3, 3),
         min_line_length=min_line_length,
+        angle_tolerance_deg=angle_tolerance_deg
     )
 
     return img_output, rectangles, edge_data, edges_dict
+
+
+def _check_mask_alignment(mask_pixels_yx, direction_vec, angle_tolerance_deg=16.0):
+    """
+    Check whether a contrail mask's orientation aligns with the aircraft direction.
+
+    Fits a line through the mask pixels (via PCA / cv2.fitLine) and compares
+    its angle to the aircraft trailing-rectangle direction vector.
+
+    Args:
+        mask_pixels_yx: (N, 2) array of (y, x) pixel coordinates from the mask.
+        direction_vec: (ux, uy) aircraft direction vector.
+        angle_tolerance_deg: Maximum angular difference to accept (degrees).
+
+    Returns:
+        is_aligned: True if mask orientation is within tolerance of flight direction.
+        mask_angle: Orientation of the mask's principal axis (0-180 degrees).
+        angle_diff: Absolute angular difference from flight direction (degrees).
+    """
+    if len(mask_pixels_yx) < 3:
+        return False, None, None
+
+    ux, uy = direction_vec
+    rect_angle = angle180_from_vec(*normalize(ux, uy))
+
+    # cv2.fitLine expects (N, 1, 2) array of (x, y) points
+    points_xy = np.stack([mask_pixels_yx[:, 1], mask_pixels_yx[:, 0]], axis=1)
+    points_xy = points_xy.astype(np.float32).reshape(-1, 1, 2)
+
+    # fitLine returns (vx, vy, x0, y0) — a unit direction + point on the line
+    line = cv2.fitLine(points_xy, cv2.DIST_L2, 0, 0.01, 0.01)
+    vx, vy = float(line[0]), float(line[1])
+    mask_angle = angle180_from_vec(vx, vy)
+
+    # Compare angles mod 180 (lines have no head/tail)
+    def norm_angle(a):
+        return (a + 180) % 180 - 90
+
+    angle_diff = abs(norm_angle(mask_angle) - norm_angle(rect_angle))
+    is_aligned = angle_diff <= angle_tolerance_deg
+
+    return is_aligned, mask_angle, angle_diff
+
+
+def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_upsampled,
+                            conf=0.25, iou_overlap_thresh=0.05, angle_tolerance_deg=16.0,
+                            rect_width_px=25):
+    """
+    Process a single image using YOLO segmentation instead of Canny edges.
+    Runs YOLO on the full image, then for each aircraft checks:
+      1) Whether any YOLO contrail mask overlaps its trailing rectangle
+      2) Whether the overlapping mask is aligned with the flight direction
+
+    Args:
+        img_path: Path to image file
+        yolo_model: Loaded ultralytics YOLO model
+        timestamp: Timestamp for this image (pandas.Timestamp)
+        df_filtered: DataFrame with aircraft positions at this timestamp
+        df_upsampled: Full flight trajectory DataFrame for direction estimation
+        conf: YOLO confidence threshold
+        iou_overlap_thresh: Minimum fraction of rectangle area overlapping a mask
+                            to count as a detection
+        angle_tolerance_deg: Maximum angle difference (degrees) between mask
+                             orientation and flight direction to accept as aligned
+
+    Returns:
+        img_output: Image with detections drawn
+        rectangles: Dictionary {ident: (rect_poly, arrow, direction_info)}
+        edge_data: Dictionary {ident: {is_making_contrails, score, bbox, ...}}
+                   (compatible with Canny pipeline output format)
+        yolo_results: Raw YOLO results object
+    """
+    img = cv2.imread(img_path)
+    if img is None:
+        return None, None, None, None
+
+    H, W = img.shape[:2]
+
+    # Get directional rectangles (same as Canny pipeline)
+    rectangles = get_directional_rectangle(
+        img, df_filtered, timestamp, df_upsampled, length_px=200, width_px=rect_width_px)
+    if len(rectangles) == 0:
+        return img, {}, {}, None
+
+    # Run YOLO segmentation on the full image
+    results = yolo_model.predict(img_path, conf=conf, verbose=False)
+    result = results[0]
+
+    # Collect individual masks at image resolution
+    individual_masks = []
+    if result.masks is not None:
+        for mask_tensor in result.masks.data:
+            mask = mask_tensor.cpu().numpy()
+            if mask.shape[:2] != (H, W):
+                mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
+            binary = (mask > 0.5).astype(np.uint8) * 255
+            individual_masks.append(binary)
+
+    # Combined mask for visualization
+    combined_mask = np.zeros((H, W), dtype=np.uint8)
+    for m in individual_masks:
+        combined_mask[m > 0] = 255
+
+    # For each aircraft, check overlap + alignment with each YOLO mask
+    img_output = img.copy()
+    edge_data = {}
+
+    # Draw YOLO masks as semi-transparent overlay
+    if np.any(combined_mask > 0):
+        mask_overlay = img_output.copy()
+        mask_overlay[combined_mask > 0] = [0, 255, 255]  # yellow for YOLO detections
+        cv2.addWeighted(mask_overlay, 0.3, img_output, 0.7, 0, img_output)
+
+    for ident, (rect_poly, arrow, direction_info) in rectangles.items():
+        ux, uy, speed_px_s = direction_info
+
+        # Create mask from the trailing rectangle
+        rect_mask = np.zeros((H, W), dtype=np.uint8)
+        cv2.fillPoly(rect_mask, [rect_poly], 255)
+        rect_pixels = np.count_nonzero(rect_mask)
+
+        # Check each YOLO mask for overlap + alignment
+        best_overlap_frac = 0.0
+        best_angle_diff = None
+        best_mask_angle = None
+        is_contrail = False
+        aligned_lines = []  # for visualization, store fitted line endpoints
+
+        for yolo_mask in individual_masks:
+            overlap = cv2.bitwise_and(yolo_mask, rect_mask)
+            overlap_pixels = np.count_nonzero(overlap)
+            if rect_pixels == 0 or overlap_pixels == 0:
+                continue
+
+            overlap_frac = overlap_pixels / rect_pixels
+            if overlap_frac < iou_overlap_thresh:
+                continue
+
+            # Get mask pixel coordinates inside the rectangle for alignment check
+            ys, xs = np.where(overlap > 0)
+            mask_pts = np.stack([ys, xs], axis=1)
+
+            is_aligned, mask_angle, angle_diff = _check_mask_alignment(
+                mask_pts, (ux, uy), angle_tolerance_deg=angle_tolerance_deg)
+
+            if overlap_frac > best_overlap_frac:
+                best_overlap_frac = overlap_frac
+                best_angle_diff = angle_diff
+                best_mask_angle = mask_angle
+
+            if is_aligned:
+                is_contrail = True
+                # Build a fitted-line segment for visualization
+                pts_xy = np.stack([xs, ys], axis=1).astype(np.float32).reshape(-1, 1, 2)
+                line = cv2.fitLine(pts_xy, cv2.DIST_L2, 0, 0.01, 0.01)
+                vx, vy = float(line[0]), float(line[1])
+                x0, y0 = float(line[2]), float(line[3])
+                # Extend line across the overlap region
+                t_vals = (xs - x0) * vx + (ys - y0) * vy
+                t_min, t_max = t_vals.min(), t_vals.max()
+                x1_l, y1_l = int(x0 + vx * t_min), int(y0 + vy * t_min)
+                x2_l, y2_l = int(x0 + vx * t_max), int(y0 + vy * t_max)
+                length = np.hypot(x2_l - x1_l, y2_l - y1_l)
+                aligned_lines.append((x1_l, y1_l, x2_l, y2_l, length))
+
+        # Compute bbox (matching Canny output format)
+        x, y, w, h = cv2.boundingRect(rect_poly)
+
+        # Find best YOLO confidence for overlapping boxes
+        best_conf = 0.0
+        if result.boxes is not None and len(result.boxes) > 0:
+            for box in result.boxes:
+                bx1, by1, bx2, by2 = box.xyxy[0].cpu().numpy()
+                ix1, iy1 = max(x, bx1), max(y, by1)
+                ix2, iy2 = min(x + w, bx2), min(y + h, by2)
+                if ix1 < ix2 and iy1 < iy2:
+                    best_conf = max(best_conf, float(box.conf[0]))
+
+        # Crop overlap mask for the output dict
+        total_overlap = cv2.bitwise_and(combined_mask, rect_mask)
+
+        edge_data[ident] = {
+            'edges': total_overlap[y:y+h, x:x+w],
+            'roi': img[y:y+h, x:x+w],
+            'bbox': (x, y, w, h),
+            'edge_pixel_count': np.count_nonzero(total_overlap),
+            'is_making_contrails': is_contrail,
+            'best_line_angle': best_mask_angle,
+            'score': best_conf if is_contrail else best_overlap_frac,
+            'lines': aligned_lines,
+            'edge_density': best_overlap_frac,
+            'overlap_fraction': best_overlap_frac,
+            'angle_diff': best_angle_diff,
+        }
+
+    return img_output, rectangles, edge_data, result
 
 
 def get_flight_distance(gps_flight, gps_origin):
