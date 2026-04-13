@@ -193,8 +193,8 @@ def run_contrail_pipeline_uwisc(date_str, camera_side='east', detector='canny',
     print(f"Video saved to {output_path}")
     if len(flights_with_contrails) > 0:
         df_contrails = pd.concat(flights_with_contrails, ignore_index=True)
-        df_contrails.to_csv(f'flights_with_contrails_{camera_name}_{date_str}.csv', index=False)
-        print(f"CSV of flights with contrails saved to flights_with_contrails_{camera_name}_{date_str}.csv")
+        df_contrails.to_csv(f'flights_with_contrails_{camera_name}_{date_str}_{detector}.csv', index=False)
+        print(f"CSV of flights with contrails saved to flights_with_contrails_{camera_name}_{date_str}_{detector}.csv")
 
 
 def main():

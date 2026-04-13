@@ -42,7 +42,7 @@ for DETECTOR in $DETECTORS; do
             --mail-user=s.borad@gwu.edu \
             --mail-type=ALL \
             -t 12:00:00 \
-            --wrap="source visor/bin/activate && cd contrails && python contrail_pipeline_arizona.py $DATE $DETECTOR_ARGS && mkdir -p $OUTPUT_DIR && mv flights_with_contrails_arizona_${DATE}*.csv $OUTPUT_DIR/ 2>/dev/null || true"
+            --wrap="source visor/bin/activate && cd contrails && python contrail_pipeline_arizona.py $DATE $DETECTOR_ARGS && mkdir -p $OUTPUT_DIR && mv flights_with_contrails_arizona_${DATE}_${DETECTOR}*.csv $OUTPUT_DIR/ 2>/dev/null || true"
 
         echo "Submitted: $JOB_NAME"
     done
@@ -64,7 +64,7 @@ for DETECTOR in $DETECTORS; do
             --mail-user=s.borad@gwu.edu \
             --mail-type=ALL \
             -t 12:00:00 \
-            --wrap="source visor/bin/activate && cd contrails && python contrail_pipeline_uwisc.py $DATE --camera-side east $DETECTOR_ARGS && mkdir -p $OUTPUT_DIR && mv flights_with_contrails_uwisc_east_${DATE}*.csv $OUTPUT_DIR/ 2>/dev/null || true"
+            --wrap="source visor/bin/activate && cd contrails && python contrail_pipeline_uwisc.py $DATE --camera-side east $DETECTOR_ARGS && mkdir -p $OUTPUT_DIR && mv flights_with_contrails_uwisc_*_${DATE}_${DETECTOR}*.csv $OUTPUT_DIR/ 2>/dev/null || true"
 
         echo "Submitted: $JOB_NAME"
     done
