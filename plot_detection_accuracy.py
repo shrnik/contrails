@@ -2,16 +2,25 @@
 Plot contrail detection accuracy: scatter plot and heatmap.
 
 Usage:
+    # Single run:
     python plot_detection_accuracy.py \
-        --labels labels/UWisc\ Aoss\ Contrail\ Labels\ -\ contrail_labels_2025-01-09_east.csv \
-        --predictions flights_with_contrails_uwisc_east_2025-01-09.csv \
+        --labels labels/uwisc/2025-01-09.csv \
+        --predictions final_data2/flights_with_contrails_uwisc_east_2025-01-09.csv \
         --date 2025-01-09 \
-        [--save-dir output/] \
-        [--bin-size 30min] \
-        [--detection-multiplier 5]
+        [--save-dir output/] [--bin-size 30min] [--detection-multiplier 5]
+
+    # Batch run (all files in predictions dir matched to labels dir):
+    python plot_detection_accuracy.py \
+        --labels-dir labels/ \
+        --predictions-dir final_data2/ \
+        [--save-dir output/] [--bin-size 30min] [--detection-multiplier 5]
 """
 
 import argparse
+import glob
+import os
+import re
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -185,29 +194,190 @@ def plot_confusion_matrix(df: pd.DataFrame, date_str: str, save_path: str = None
     return fig
 
 
+def compute_stats(df: pd.DataFrame) -> dict:
+    counts = {r: int((df['result'] == r).sum()) for r in ('TP', 'FP', 'FN', 'TN')}
+    total = sum(counts.values())
+    precision = counts['TP'] / (counts['TP'] + counts['FP']) if (counts['TP'] + counts['FP']) > 0 else 0
+    recall = counts['TP'] / (counts['TP'] + counts['FN']) if (counts['TP'] + counts['FN']) > 0 else 0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    accuracy = (counts['TP'] + counts['TN']) / total if total > 0 else 0
+    return {**counts, 'total': total, 'precision': precision, 'recall': recall, 'f1': f1, 'accuracy': accuracy}
+
+
+def _compute_metrics(agg: dict) -> dict:
+    prec = agg['TP'] / (agg['TP'] + agg['FP']) if (agg['TP'] + agg['FP']) > 0 else 0
+    rec = agg['TP'] / (agg['TP'] + agg['FN']) if (agg['TP'] + agg['FN']) > 0 else 0
+    f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0
+    acc = (agg['TP'] + agg['TN']) / agg['total'] if agg['total'] > 0 else 0
+    return {'precision': prec, 'recall': rec, 'f1': f1, 'accuracy': acc}
+
+
+def _aggregate(stats_list: list[dict]) -> dict:
+    return {k: sum(s[k] for s in stats_list) for k in ('TP', 'FP', 'FN', 'TN', 'total')}
+
+
+def _latex_row(date, source, camera, agg, bold=False):
+    m = _compute_metrics(agg)
+    vals = [date, source, camera,
+            str(agg['TP']), str(agg['FP']), str(agg['FN']), str(agg['TN']), str(agg['total']),
+            f"{m['precision']:.2f}", f"{m['recall']:.2f}", f"{m['f1']:.2f}", f"{m['accuracy']:.2f}"]
+    if bold:
+        vals = [f"\\textbf{{{v}}}" for v in vals]
+    return '        ' + ' & '.join(vals) + r' \\'
+
+
+def print_summary_table(all_stats: list[dict]):
+    lines = []
+    lines.append(r'\begin{table}[ht]')
+    lines.append(r'    \centering')
+    lines.append(r'    \caption{Contrail Detection Accuracy Summary}')
+    lines.append(r'    \label{tab:detection_accuracy}')
+    lines.append(r'    \begin{tabular}{lll rrrr r rrrr}')
+    lines.append(r'        \toprule')
+    lines.append(r'        Date & Source & Camera & TP & FP & FN & TN & Total & Prec & Rec & F1 & Acc \\')
+    lines.append(r'        \midrule')
+
+    # Per-day rows
+    for s in all_stats:
+        camera = s.get('camera', 'all')
+        lines.append(_latex_row(s['date'], s['source'], camera, s))
+
+    # Per-camera aggregates
+    cameras = sorted(set(s.get('camera', 'all') for s in all_stats))
+    if len(cameras) > 1 or (len(cameras) == 1 and cameras[0] != 'all'):
+        lines.append(r'        \midrule')
+        for cam in cameras:
+            cam_stats = [s for s in all_stats if s.get('camera', 'all') == cam]
+            agg = _aggregate(cam_stats)
+            lines.append(_latex_row('All Dates', 'all', cam, agg, bold=True))
+
+    # Overall total
+    lines.append(r'        \midrule')
+    agg = _aggregate(all_stats)
+    lines.append(_latex_row('Total', 'all', 'all', agg, bold=True))
+
+    lines.append(r'        \bottomrule')
+    lines.append(r'    \end{tabular}')
+    lines.append(r'\end{table}')
+
+    latex_str = '\n'.join(lines)
+    print(f"\n{latex_str}\n")
+
+
+def find_pairs(labels_dir: str, predictions_dir: str) -> list[dict]:
+    """Match prediction CSVs to label CSVs by date."""
+    pairs = []
+    for pred_file in sorted(glob.glob(os.path.join(predictions_dir, '*.csv'))):
+        fname = os.path.basename(pred_file)
+        # Extract date (YYYY-MM-DD) from filename
+        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', fname)
+        if not date_match:
+            continue
+        date_str = date_match.group(1)
+
+        # Determine source and camera from filename
+        # e.g. flights_with_contrails_uwisc_east_2025-01-09.csv -> source=uwisc, camera=east
+        # e.g. flights_with_contrails_arizona_2026-01-18.csv -> source=arizona, camera=all
+        if 'arizona' in fname:
+            source = 'arizona'
+            camera = 'all'
+        elif 'uwisc' in fname:
+            source = 'uwisc'
+            cam_match = re.search(r'uwisc_(\w+)_\d{4}', fname)
+            camera = cam_match.group(1) if cam_match else 'all'
+        else:
+            source = 'unknown'
+            camera = 'all'
+
+        # Look for matching label file in subdirs
+        label_path = os.path.join(labels_dir, source, f'{date_str}.csv')
+        if not os.path.exists(label_path):
+            # Try flat structure
+            label_path = os.path.join(labels_dir, f'{date_str}.csv')
+        if not os.path.exists(label_path):
+            print(f"WARNING: No label file found for {fname} (tried {label_path}), skipping.")
+            continue
+
+        pairs.append({'labels': label_path, 'predictions': pred_file, 'date': date_str, 'source': source, 'camera': camera})
+    return pairs
+
+
+def run_single(labels_path, predictions_path, date_str, source, save_dir, bin_size, detection_multiplier, show, camera='all'):
+    tag = f"{source}_{camera}_{date_str}" if camera != 'all' else f"{source}_{date_str}"
+    print(f"\n{'='*60}")
+    print(f"  Processing: {tag}")
+    print(f"  Labels:      {labels_path}")
+    print(f"  Predictions: {predictions_path}")
+    print(f"{'='*60}")
+
+    df = load_and_merge(labels_path, predictions_path, date_str)
+    stats = compute_stats(df)
+    stats['date'] = date_str
+    stats['source'] = source
+    stats['camera'] = camera
+
+    scatter_save = f"{save_dir}/scatter_{tag}.png" if save_dir else None
+    heatmap_save = f"{save_dir}/heatmap_{tag}.png" if save_dir else None
+    confmat_save = f"{save_dir}/confmat_{tag}.png" if save_dir else None
+
+    plot_scatter(df, f"{source} {date_str}", save_path=scatter_save, show=show)
+    plot_heatmap(df, f"{source} {date_str}", bin_size=bin_size,
+                 detection_multiplier=detection_multiplier, save_path=heatmap_save, show=show)
+    plot_confusion_matrix(df, f"{source} {date_str}", save_path=confmat_save, show=show)
+
+    return stats
+
+
 def main():
     parser = argparse.ArgumentParser(description='Plot contrail detection accuracy')
-    parser.add_argument('--labels', required=True, help='Path to ground truth labels CSV')
-    parser.add_argument('--predictions', required=True, help='Path to detections CSV')
-    parser.add_argument('--date', required=True, help='Date string (YYYY-MM-DD) for time parsing')
-    parser.add_argument('--save-dir', default=None, help='Directory to save plots (optional)')
+    # Single-run args
+    parser.add_argument('--labels', default=None, help='Path to ground truth labels CSV (single run)')
+    parser.add_argument('--predictions', default=None, help='Path to detections CSV (single run)')
+    parser.add_argument('--date', default=None, help='Date string YYYY-MM-DD (single run)')
+    # Batch-run args
+    parser.add_argument('--labels-dir', default=None, help='Directory containing label CSVs (batch run)')
+    parser.add_argument('--predictions-dir', default=None, help='Directory containing prediction CSVs (batch run)')
+    # Common args
+    parser.add_argument('--save-dir', default=None, help='Directory to save plots')
     parser.add_argument('--bin-size', default='30min', help='Time bin size for heatmap (default: 30min)')
     parser.add_argument('--detection-multiplier', type=int, default=5,
                         help='Score multiplier for contrail detections (default: 5)')
+    parser.add_argument('--no-show', action='store_true', help='Do not display plots (useful for batch)')
     args = parser.parse_args()
+
     if args.save_dir:
-        import os
         os.makedirs(args.save_dir, exist_ok=True)
-    df = load_and_merge(args.labels, args.predictions, args.date)
 
-    scatter_save  = f"{args.save_dir}/scatter_{args.date}.png"  if args.save_dir else None
-    heatmap_save  = f"{args.save_dir}/heatmap_{args.date}.png"  if args.save_dir else None
-    confmat_save  = f"{args.save_dir}/confmat_{args.date}.png"  if args.save_dir else None
+    show = not args.no_show
 
-    plot_scatter(df, args.date, save_path=scatter_save)
-    plot_heatmap(df, args.date, bin_size=args.bin_size,
-                 detection_multiplier=args.detection_multiplier, save_path=heatmap_save)
-    plot_confusion_matrix(df, args.date, save_path=confmat_save)
+    # Batch mode
+    if args.labels_dir and args.predictions_dir:
+        pairs = find_pairs(args.labels_dir, args.predictions_dir)
+        if not pairs:
+            print("ERROR: No matching label/prediction pairs found.")
+            return
+        all_stats = []
+        for pair in pairs:
+            stats = run_single(pair['labels'], pair['predictions'], pair['date'],
+                               pair['source'], args.save_dir, args.bin_size,
+                               args.detection_multiplier, show, camera=pair['camera'])
+            all_stats.append(stats)
+        print_summary_table(all_stats)
+
+    # Single mode
+    elif args.labels and args.predictions and args.date:
+        fname = os.path.basename(args.predictions)
+        source = 'arizona' if 'arizona' in fname else 'uwisc'
+        cam_match = re.search(r'uwisc_(\w+)_\d{4}', fname)
+        camera = cam_match.group(1) if cam_match else 'all'
+        stats = run_single(args.labels, args.predictions, args.date,
+                           source, args.save_dir, args.bin_size,
+                           args.detection_multiplier, show, camera=camera)
+        print_summary_table([stats])
+
+    else:
+        parser.error('Provide either --labels-dir and --predictions-dir (batch), '
+                     'or --labels, --predictions, and --date (single run).')
 
 
 if __name__ == '__main__':

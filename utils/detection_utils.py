@@ -233,7 +233,9 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
                               blur_kernel=(3, 3),
                               border_px=7,
                               min_line_length=40.0,
-                              angle_tolerance_deg=8.0
+                              angle_tolerance_deg=8.0,
+                              use_clahe=False,
+                              clahe_clip_limit=3.0
                               ):
     """
     Apply Canny edge detection to rectangular regions returned by get_directional_rectangle.
@@ -256,6 +258,12 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
     # Convert to grayscale for edge detection
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     prev_gray = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
+
+    # Apply CLAHE contrast enhancement before differencing
+    if use_clahe:
+        clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+        prev_gray = clahe.apply(prev_gray)
 
     diff = cv2.absdiff(gray, prev_gray)
     # Apply Gaussian blur to reduce noise
@@ -339,7 +347,7 @@ def calculate_edge_statistics(edge_data_dict):
     return pd.DataFrame(stats)
 
 
-def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filtered, df_upsampled, min_line_length=40.0, angle_tolerance_deg=8.0):
+def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filtered, df_upsampled, min_line_length=40.0, angle_tolerance_deg=8.0, use_clahe=False, clahe_clip_limit=3.0):
     """
     Process a single image: load, detect rectangles, apply Canny edge detection.
 
@@ -372,7 +380,9 @@ def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filter
         img, prev_img, rectangles,
         blur_kernel=(3, 3),
         min_line_length=min_line_length,
-        angle_tolerance_deg=angle_tolerance_deg
+        angle_tolerance_deg=angle_tolerance_deg,
+        use_clahe=use_clahe,
+        clahe_clip_limit=clahe_clip_limit
     )
 
     return img_output, rectangles, edge_data, edges_dict
@@ -452,7 +462,7 @@ def _measure_width_length_ratio(mask_pixels_yx, direction_vec):
 def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_upsampled,
                             conf=0.25, iou_overlap_thresh=0.05, angle_tolerance_deg=16.0,
                             rect_width_px=25, max_width_length_ratio=0.5,
-                            max_overlap_frac=0.8):
+                            max_overlap_frac=0.8, clahe_clip_limit=2.0):
     """
     Process a single image using YOLO segmentation instead of Canny edges.
     Runs YOLO on the full image, then for each aircraft checks:
@@ -490,8 +500,15 @@ def process_image_with_yolo(img_path, yolo_model, timestamp, df_filtered, df_ups
     if len(rectangles) == 0:
         return img, {}, {}, None
 
-    # Run YOLO segmentation at full image resolution
-    results = yolo_model.predict(img_path, conf=conf, verbose=False, imgsz=(H, W))
+    # Apply CLAHE contrast enhancement before YOLO inference
+    # Enhances L channel in LAB space to boost faint contrails without color shift
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
+    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+    img_enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+    # Run YOLO segmentation on contrast-enhanced image
+    results = yolo_model.predict(img_enhanced, conf=conf, verbose=False, imgsz=(H, W))
     result = results[0]
 
     # Collect individual masks at image resolution
