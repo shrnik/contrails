@@ -40,11 +40,11 @@ CAMERAS = {
 BASE_URL = "https://metobs.ssec.wisc.edu/pub/cache/aoss/cameras"
 IMG_W, IMG_H = 2592, 1944
 
-# Panorama output settings (azimuth x altitude grid)
-# Full 360 azimuth, -10 to 80 altitude
+# Panorama output settings
 AZ_RANGE = (0, 360)       # degrees
 ALT_RANGE = (-10, 80)     # degrees
-PANO_SCALE = 10            # pixels per degree
+PANO_SCALE = 10            # pixels per degree (used for polar radius)
+POLAR_SIZE = 1800          # diameter of the polar canvas in pixels
 
 
 def load_camera_params(path):
@@ -191,64 +191,80 @@ def download_image(camera_name, date_str, time_str):
     return None
 
 
-def build_panorama(images_dict, params_dict):
+def az_alt_to_polar(az_deg, alt_deg):
     """
-    Build a panorama by projecting all camera images into azimuth/altitude space.
+    Convert azimuth/altitude to polar canvas pixel coordinates.
 
-    Args:
-        images_dict: {camera_name: BGR image}
-        params_dict: {camera_name: (K, dist, R, t)}
+    Polar layout:
+      - Center of canvas = zenith (alt=90)
+      - Edge of canvas = horizon (alt=ALT_RANGE[0])
+      - North is up, East is right (clockwise azimuth)
 
     Returns:
-        panorama: BGR image
+        px, py: pixel coordinates on the POLAR_SIZE x POLAR_SIZE canvas
     """
-    az_min, az_max = AZ_RANGE
     alt_min, alt_max = ALT_RANGE
-    pano_w = int((az_max - az_min) * PANO_SCALE)
-    pano_h = int((alt_max - alt_min) * PANO_SCALE)
+    size = POLAR_SIZE
+    center = size / 2.0
+    max_radius = size / 2.0
 
-    # Accumulator for blending
-    pano_sum = np.zeros((pano_h, pano_w, 3), dtype=np.float64)
-    pano_weight = np.zeros((pano_h, pano_w), dtype=np.float64)
+    # Radius: horizon at edge, zenith at center
+    # Normalize altitude: 0 at alt_max (zenith-ish), 1 at alt_min (horizon)
+    r_norm = (alt_max - alt_deg) / (alt_max - alt_min)
+    r_norm = np.clip(r_norm, 0, 1)
+    radius = r_norm * max_radius
+
+    # Angle: azimuth in radians, 0=North=up, clockwise
+    # In image coords: up is -y, right is +x
+    # angle from top, clockwise: x = r*sin(az), y = -r*cos(az)
+    az_rad = np.radians(az_deg)
+    px = center + radius * np.sin(az_rad)
+    py = center - radius * np.cos(az_rad)
+
+    return px, py
+
+
+def build_panorama(images_dict, params_dict):
+    """
+    Build a circular polar panorama by projecting all camera images
+    into azimuth/altitude space on a polar canvas.
+    """
+    size = POLAR_SIZE
+    alt_min, alt_max = ALT_RANGE
+
+    pano_sum = np.zeros((size, size, 3), dtype=np.float64)
+    pano_weight = np.zeros((size, size), dtype=np.float64)
 
     for cam_name, img in images_dict.items():
         print(f"  Projecting {cam_name}...")
         K, dist, R, t = params_dict[cam_name]
 
-        # Compute azimuth/altitude for every pixel
         az_map, alt_map = pixel_to_az_alt(K, dist, R)
 
-        # Create a weight map: higher weight toward image center, lower at edges
-        # This provides smooth blending in overlap regions
+        # Weight map: higher weight toward image center
         cx, cy = IMG_W / 2, IMG_H / 2
         yy, xx = np.mgrid[0:IMG_H, 0:IMG_W]
-        # Normalized distance from center (0 at center, 1 at corner)
         dist_from_center = np.sqrt(((xx - cx) / cx) ** 2 + ((yy - cy) / cy) ** 2)
         weight = np.clip(1.0 - dist_from_center * 0.8, 0.05, 1.0)
 
-        # Map each pixel to panorama coordinates
-        pano_x = ((az_map - az_min) / (az_max - az_min) * pano_w).astype(np.float32)
-        pano_y = ((alt_max - alt_map) / (alt_max - alt_min) * pano_h).astype(np.float32)  # flip: alt increases upward
+        # Map to polar canvas
+        pano_x, pano_y = az_alt_to_polar(az_map, alt_map)
 
-        # Only use valid pixels within panorama bounds
         valid = (
-            (pano_x >= 0) & (pano_x < pano_w - 1) &
-            (pano_y >= 0) & (pano_y < pano_h - 1) &
-            (alt_map > alt_min) & (alt_map < alt_max)
+            (pano_x >= 0) & (pano_x < size - 1) &
+            (pano_y >= 0) & (pano_y < size - 1) &
+            (alt_map > alt_min) & (alt_map < alt_max) &
+            np.isfinite(pano_x) & np.isfinite(pano_y)
         )
 
-        # Use integer indices for accumulation (forward mapping)
         px = pano_x[valid].astype(np.int32)
         py = pano_y[valid].astype(np.int32)
         w = weight[valid]
+        pixels = img[valid].astype(np.float64)
 
-        pixels = img[valid].astype(np.float64)  # (N, 3)
-
-        # Accumulate weighted colors
         np.add.at(pano_sum, (py, px), pixels * w[:, None])
         np.add.at(pano_weight, (py, px), w)
 
-    # Normalize
     mask = pano_weight > 0
     pano = np.zeros_like(pano_sum, dtype=np.uint8)
     pano[mask] = (pano_sum[mask] / pano_weight[mask, None]).astype(np.uint8)
@@ -257,31 +273,44 @@ def build_panorama(images_dict, params_dict):
 
 
 def add_grid_overlay(pano, az_range, alt_range, scale):
-    """Add azimuth/altitude grid lines and labels."""
-    az_min, az_max = az_range
+    """Add polar grid: concentric altitude rings and radial azimuth lines."""
+    size = POLAR_SIZE
     alt_min, alt_max = alt_range
-    pano_h, pano_w = pano.shape[:2]
-
+    center = size // 2
+    max_radius = size // 2
     overlay = pano.copy()
 
-    # Draw azimuth lines every 30 degrees
-    for az in range(0, 361, 30):
-        x = int((az - az_min) / (az_max - az_min) * pano_w)
-        if 0 <= x < pano_w:
-            cv2.line(overlay, (x, 0), (x, pano_h), (100, 100, 100), 1)
-            # Label with cardinal directions
-            labels = {0: "N", 90: "E", 180: "S", 270: "W", 360: "N"}
-            label = labels.get(az, f"{az}")
-            cv2.putText(overlay, label, (x + 3, pano_h - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+    # Altitude rings every 10 degrees
+    for alt in range(0, alt_max + 1, 10):
+        r_norm = (alt_max - alt) / (alt_max - alt_min)
+        r = int(r_norm * max_radius)
+        if r > 0:
+            cv2.circle(overlay, (center, center), r, (80, 80, 80), 1, cv2.LINE_AA)
+            # Label the ring (place at the North spoke)
+            label_y = center - r - 5
+            if 10 <= label_y < size - 10:
+                cv2.putText(overlay, f"{alt}", (center + 3, label_y + 12),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1, cv2.LINE_AA)
 
-    # Draw altitude lines every 10 degrees
-    for alt in range(-10, 81, 10):
-        y = int((alt_max - alt) / (alt_max - alt_min) * pano_h)
-        if 0 <= y < pano_h:
-            cv2.line(overlay, (0, y), (pano_w, y), (100, 100, 100), 1)
-            cv2.putText(overlay, f"{alt}", (5, y - 3),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+    # Azimuth spokes every 30 degrees
+    cardinals = {0: "N", 30: "30", 60: "60", 90: "E", 120: "120", 150: "150",
+                 180: "S", 210: "210", 240: "240", 270: "W", 300: "300", 330: "330"}
+    for az in range(0, 360, 30):
+        az_rad = np.radians(az)
+        x_end = int(center + max_radius * np.sin(az_rad))
+        y_end = int(center - max_radius * np.cos(az_rad))
+        cv2.line(overlay, (center, center), (x_end, y_end), (80, 80, 80), 1, cv2.LINE_AA)
+
+        # Label at the edge
+        label_r = max_radius + 15
+        lx = int(center + label_r * np.sin(az_rad))
+        ly = int(center - label_r * np.cos(az_rad))
+        label = cardinals.get(az, f"{az}")
+        font_scale = 0.6 if label in ("N", "E", "S", "W") else 0.4
+        # Center the text
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+        cv2.putText(overlay, label, (lx - tw // 2, ly + th // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (220, 220, 220), 1, cv2.LINE_AA)
 
     return overlay
 
@@ -315,30 +344,19 @@ def gps_to_az_alt(lats, lons, alts, origin_gps):
 def overlay_adsb(pano, df_flights, origin_gps, target_time_utc, az_range, alt_range,
                  time_window_sec=60):
     """
-    Overlay ADS-B flight tracks onto the panorama.
+    Overlay ADS-B flight tracks onto the polar panorama.
 
     Draws flight positions within time_window_sec of target_time as dots,
     with trailing track lines from positions within a wider window.
-
-    Args:
-        pano: panorama image (modified in-place)
-        df_flights: upsampled ADS-B dataframe with lat, lon, alt_gnss_meters, time, ident
-        origin_gps: [lat, lon, alt] camera origin
-        target_time_utc: pandas Timestamp (UTC)
-        az_range, alt_range: panorama coordinate ranges
-        time_window_sec: seconds around target time for current positions
     """
-    az_min, az_max = az_range
     alt_min, alt_max = alt_range
-    pano_h, pano_w = pano.shape[:2]
+    size = POLAR_SIZE
 
     # Time windows
     t_start = target_time_utc - pd.Timedelta(seconds=time_window_sec)
     t_end = target_time_utc + pd.Timedelta(seconds=time_window_sec)
-    # Wider window for trails
     trail_start = target_time_utc - pd.Timedelta(minutes=5)
 
-    # Filter to trail window
     mask_trail = (df_flights['time'] >= trail_start) & (df_flights['time'] <= t_end)
     df_trail = df_flights[mask_trail].copy()
 
@@ -346,7 +364,6 @@ def overlay_adsb(pano, df_flights, origin_gps, target_time_utc, az_range, alt_ra
         print("  No ADS-B data in time window")
         return pano
 
-    # Compute azimuth/altitude for all trail points
     az, alt_angle = gps_to_az_alt(
         df_trail['lat'].values,
         df_trail['lon'].values,
@@ -357,14 +374,15 @@ def overlay_adsb(pano, df_flights, origin_gps, target_time_utc, az_range, alt_ra
     df_trail['az'] = az
     df_trail['alt_angle'] = alt_angle
 
-    # Convert to panorama pixel coordinates
-    df_trail['pano_x'] = ((df_trail['az'] - az_min) / (az_max - az_min) * pano_w).astype(int)
-    df_trail['pano_y'] = ((alt_max - df_trail['alt_angle']) / (alt_max - alt_min) * pano_h).astype(int)
+    # Convert to polar canvas coordinates
+    px, py = az_alt_to_polar(df_trail['az'].values, df_trail['alt_angle'].values)
+    df_trail['pano_x'] = px.astype(int)
+    df_trail['pano_y'] = py.astype(int)
 
-    # Filter to visible region
+    # Filter to visible region (within canvas and altitude range)
     visible = (
-        (df_trail['pano_x'] >= 0) & (df_trail['pano_x'] < pano_w) &
-        (df_trail['pano_y'] >= 0) & (df_trail['pano_y'] < pano_h) &
+        (df_trail['pano_x'] >= 0) & (df_trail['pano_x'] < size) &
+        (df_trail['pano_y'] >= 0) & (df_trail['pano_y'] < size) &
         (df_trail['alt_angle'] > alt_min) & (df_trail['alt_angle'] < alt_max)
     )
     df_visible = df_trail[visible]
@@ -391,8 +409,8 @@ def overlay_adsb(pano, df_flights, origin_gps, target_time_utc, az_range, alt_ra
         # Draw trail line
         if len(pts) >= 2:
             for i in range(len(pts) - 1):
-                # Skip if points wrap around azimuth (>180 deg jump)
-                if abs(pts[i][0] - pts[i+1][0]) < pano_w // 2:
+                # Skip if points are too far apart (wrapping or discontinuity)
+                if abs(pts[i][0] - pts[i+1][0]) < size // 2 and abs(pts[i][1] - pts[i+1][1]) < size // 2:
                     cv2.line(pano, tuple(pts[i]), tuple(pts[i+1]), color, 1, cv2.LINE_AA)
 
         # Draw current position (within narrow time window) as a larger dot
@@ -417,9 +435,11 @@ def overlay_adsb(pano, df_flights, origin_gps, target_time_utc, az_range, alt_ra
 
 def precompute_projection_maps(params_dict):
     """
-    Precompute azimuth/altitude maps and weight maps for each camera.
+    Precompute polar projection maps and weight maps for each camera.
     This is expensive, so we do it once and reuse for every frame.
     """
+    size = POLAR_SIZE
+    alt_min, alt_max = ALT_RANGE
     maps = {}
     for cam_name, (K, dist, R, t) in params_dict.items():
         print(f"  Precomputing projection for {cam_name}...")
@@ -431,18 +451,13 @@ def precompute_projection_maps(params_dict):
         dist_from_center = np.sqrt(((xx - cx) / cx) ** 2 + ((yy - cy) / cy) ** 2)
         weight = np.clip(1.0 - dist_from_center * 0.8, 0.05, 1.0)
 
-        az_min, az_max = AZ_RANGE
-        alt_min, alt_max = ALT_RANGE
-        pano_w = int((az_max - az_min) * PANO_SCALE)
-        pano_h = int((alt_max - alt_min) * PANO_SCALE)
-
-        pano_x = ((az_map - az_min) / (az_max - az_min) * pano_w).astype(np.float32)
-        pano_y = ((alt_max - alt_map) / (alt_max - alt_min) * pano_h).astype(np.float32)
+        pano_x, pano_y = az_alt_to_polar(az_map, alt_map)
 
         valid = (
-            (pano_x >= 0) & (pano_x < pano_w - 1) &
-            (pano_y >= 0) & (pano_y < pano_h - 1) &
-            (alt_map > alt_min) & (alt_map < alt_max)
+            (pano_x >= 0) & (pano_x < size - 1) &
+            (pano_y >= 0) & (pano_y < size - 1) &
+            (alt_map > alt_min) & (alt_map < alt_max) &
+            np.isfinite(pano_x) & np.isfinite(pano_y)
         )
 
         maps[cam_name] = {
@@ -456,15 +471,11 @@ def precompute_projection_maps(params_dict):
 
 def build_panorama_fast(images_dict, projection_maps):
     """
-    Build a panorama using precomputed projection maps (much faster per frame).
+    Build a polar panorama using precomputed projection maps (much faster per frame).
     """
-    az_min, az_max = AZ_RANGE
-    alt_min, alt_max = ALT_RANGE
-    pano_w = int((az_max - az_min) * PANO_SCALE)
-    pano_h = int((alt_max - alt_min) * PANO_SCALE)
-
-    pano_sum = np.zeros((pano_h, pano_w, 3), dtype=np.float64)
-    pano_weight = np.zeros((pano_h, pano_w), dtype=np.float64)
+    size = POLAR_SIZE
+    pano_sum = np.zeros((size, size, 3), dtype=np.float64)
+    pano_weight = np.zeros((size, size), dtype=np.float64)
 
     for cam_name, img in images_dict.items():
         if cam_name not in projection_maps:
@@ -640,11 +651,8 @@ def _run_video(args, params, origin_gps, script_dir):
     print("\nPrecomputing projection maps...")
     proj_maps = precompute_projection_maps(params)
 
-    # Panorama dimensions
-    az_min, az_max = AZ_RANGE
-    alt_min, alt_max = ALT_RANGE
-    pano_w = int((az_max - az_min) * PANO_SCALE)
-    pano_h = int((alt_max - alt_min) * PANO_SCALE)
+    # Polar canvas dimensions
+    size = POLAR_SIZE
 
     # Load ADS-B data for the full window (once)
     df_adsb = None
@@ -669,7 +677,7 @@ def _run_video(args, params, origin_gps, script_dir):
     out_path = args.output or f"panorama_{args.date}_{args.time.replace(':', '')}_{duration_min}min.mp4"
     tmp_path = out_path + ".tmp.mp4"
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    writer = cv2.VideoWriter(tmp_path, fourcc, fps, (pano_w, pano_h))
+    writer = cv2.VideoWriter(tmp_path, fourcc, fps, (size, size))
 
     # Generate each frame at native cadence
     frame_count = 0
@@ -695,11 +703,11 @@ def _run_video(args, params, origin_gps, script_dir):
         if not args.no_grid:
             pano = add_grid_overlay(pano, AZ_RANGE, ALT_RANGE, PANO_SCALE)
 
-        # Add timestamp label
+        # Add timestamp label (bottom-left corner of polar canvas)
         label = f"{args.date} {hh}:{mm}:{ss} CST"
-        cv2.putText(pano, label, (pano_w - 350, 30),
+        cv2.putText(pano, label, (10, size - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(pano, label, (pano_w - 350, 30),
+        cv2.putText(pano, label, (10, size - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 1, cv2.LINE_AA)
 
         # Overlay ADS-B
