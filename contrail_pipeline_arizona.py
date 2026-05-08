@@ -32,6 +32,7 @@ def run_contrail_pipeline_arizona(date_str, base_dir=None, camera_params_path=No
     end_time = pd.to_datetime(f"{date_str} 18:00:00").tz_localize('America/Phoenix').tz_convert('UTC')
 
     df = adsb_utils.read_adsblol_csv(adsb_csv_path, origin_gps=origin_gps)
+    df = df[df['alt_gnss_meters'] > 8000]  # Filter out low altitude objects (e.g., cars, birds)
     df = df[(df['time'] >= start_time) & (df['time'] < end_time)]
     df_upsampled = adsb_utils.get_upsampled_df_for_day(df, max_range_m=100000)
 
@@ -89,6 +90,14 @@ def run_contrail_pipeline_arizona(date_str, base_dir=None, camera_params_path=No
                 df_upsampled=df_upsampled,
                 conf=yolo_conf,
                 angle_tolerance_deg=16,
+            )
+        elif detector == 'canny_no_diff':
+            img_o, rectangles, edge_data, edges_dict = detection_utils.process_image_with_canny_edges_no_diff(
+                f"{base_dir}/{row['image_file']}",
+                timestamp=row['time'],
+                df_filtered=df_filtered,
+                df_upsampled=df_upsampled,
+                min_line_length=20,
             )
         else:
             img_o, rectangles, edge_data, edges_dict = detection_utils.process_image_with_canny_edges(f"{base_dir}/{row['image_file']}",
@@ -154,8 +163,8 @@ def main():
     parser.add_argument("--base-dir", help="Base directory containing images (default: arizona_images/<date>/cam2)")
     parser.add_argument("--camera-params", dest="camera_params_path", help="Path to camera_params.json")
     parser.add_argument("--adsb-csv", dest="adsb_csv_path", help="Path to ADS-B CSV file")
-    parser.add_argument("--detector", default="canny", choices=["canny", "yolo"],
-                        help="Detection method: canny (edge-based) or yolo (segmentation)")
+    parser.add_argument("--detector", default="canny", choices=["canny", "canny_no_diff", "yolo"],
+                        help="Detection method: canny (frame-diff + edges), canny_no_diff (raw frame edges), or yolo (segmentation)")
     parser.add_argument("--yolo-model-path", type=str, default=None,
                         help="Path to trained YOLO seg weights (required for --detector yolo)")
     parser.add_argument("--yolo-conf", type=float, default=0.25,

@@ -122,6 +122,13 @@ def run_contrail_pipeline_uwisc(date_str, camera_side='east', detector='canny',
                 conf=yolo_conf,
                 angle_tolerance_deg=16,
             )
+        elif detector == 'canny_no_diff':
+            img_o, rectangles, edge_data, edges_dict = detection_utils.process_image_with_canny_edges_no_diff(
+                f"{base_dir}/{row['image_file']}",
+                timestamp=row['time'],
+                df_filtered=df_filtered,
+                df_upsampled=df_upsampled,
+            )
         else:
             img_o, rectangles, edge_data, edges_dict = detection_utils.process_image_with_canny_edges(f"{base_dir}/{row['image_file']}",
                                     prev_img_path=prev_img_path,
@@ -202,8 +209,8 @@ def main():
     parser = argparse.ArgumentParser(description="Run contrail detection pipeline for UWisc camera.")
     parser.add_argument("dates", nargs="+", metavar="DATE", help="Date(s) to process in YYYY-MM-DD format")
     parser.add_argument("--camera-side", default="east", choices=["east", "south", "west", "north"], help="Camera side (default: east)")
-    parser.add_argument("--detector", default="canny", choices=["canny", "yolo"],
-                        help="Detection method: canny (edge-based) or yolo (segmentation)")
+    parser.add_argument("--detector", default="canny", choices=["canny", "canny_no_diff", "yolo"],
+                        help="Detection method: canny (frame-diff + edges), canny_no_diff (raw frame edges), or yolo (segmentation)")
     parser.add_argument("--yolo-model-path", type=str, default=None,
                         help="Path to trained YOLO seg weights (required for --detector yolo)")
     parser.add_argument("--yolo-conf", type=float, default=0.25,

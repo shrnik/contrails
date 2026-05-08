@@ -217,7 +217,7 @@ def _compute_edges_for_rectangles(gray_blurred, rectangles_dict, border_px=7):
         low = int(0.25 * high)
         roi_big = cv2.bitwise_and(gray_blurred, gray_blurred, mask=mask_big)
         _, roi_big = cv2.threshold(roi_big, t, 255, cv2.THRESH_TOZERO)
-        edges_big = cv2.Canny(roi_big, low, high)
+        edges_big = cv2.Canny(roi_big, 30, 100)
 
         # 3) Keep only edges inside the original rectangle
         mask_small = np.zeros((H, W), dtype=np.uint8)
@@ -235,43 +235,44 @@ def apply_canny_to_rectangles(img, prev_img, rectangles_dict,
                               min_line_length=40.0,
                               angle_tolerance_deg=8.0,
                               use_clahe=False,
-                              clahe_clip_limit=3.0
+                              clahe_clip_limit=3.0,
+                              use_frame_diff=True,
                               ):
     """
     Apply Canny edge detection to rectangular regions returned by get_directional_rectangle.
 
     Args:
         img: Input image (BGR format)
+        prev_img: Previous frame (BGR format). Only used when use_frame_diff=True.
         rectangles_dict: Dictionary from get_directional_rectangle with format:
                         {ident: (rect_poly, arrow, direction_info)}
-        lower_threshold: Lower threshold for Canny edge detection (default: 50)
-        upper_threshold: Upper threshold for Canny edge detection (default: 150)
-        blur_kernel: Kernel size for Gaussian blur preprocessing (default: (5, 5))
-        overlay_edges: If True, overlay edges on original image; if False, return edge images
-        edge_color: Color for edge visualization when overlay_edges=True (BGR format)
+        blur_kernel: Kernel size for Gaussian blur preprocessing (default: (3, 3))
         border_px: Pixels to expand rectangle for edge detection to avoid edge artifacts (default: 7)
+        use_frame_diff: If True (default), diff current and previous frame before edge detection.
+                        If False, run Canny directly on the current frame (no prev_img needed).
 
     Returns:
-        If overlay_edges=True: Image with edges overlaid
-        If overlay_edges=False: Dictionary {ident: edge_data} for each aircraft
+        output image, edge_data dict per aircraft, edges_dict per aircraft
     """
-    # Convert to grayscale for edge detection
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    prev_gray = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
 
-    # Apply CLAHE contrast enhancement before differencing
-    if use_clahe:
-        clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
-        gray = clahe.apply(gray)
-        prev_gray = clahe.apply(prev_gray)
-
-    diff = cv2.absdiff(gray, prev_gray)
-    # Apply Gaussian blur to reduce noise
-    if blur_kernel is not None and blur_kernel[0] > 0:
-        gray_blurred = cv2.GaussianBlur(diff, blur_kernel, 0)
-        # gray_blurred = cv2.threshold(gray_blurred, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)[1]
+    if use_frame_diff:
+        prev_gray = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
+        if use_clahe:
+            clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+            prev_gray = clahe.apply(prev_gray)
+        base = cv2.absdiff(gray, prev_gray)
     else:
-        gray_blurred = gray
+        if use_clahe:
+            clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+        base = gray
+
+    if blur_kernel is not None and blur_kernel[0] > 0:
+        gray_blurred = cv2.GaussianBlur(base, blur_kernel, 0)
+    else:
+        gray_blurred = base
 
     # Compute edges for all rectangles (shared logic)
     edges_dict = _compute_edges_for_rectangles(
@@ -383,6 +384,51 @@ def process_image_with_canny_edges(img_path, prev_img_path, timestamp, df_filter
         angle_tolerance_deg=angle_tolerance_deg,
         use_clahe=use_clahe,
         clahe_clip_limit=clahe_clip_limit
+    )
+
+    return img_output, rectangles, edge_data, edges_dict
+
+
+def process_image_with_canny_edges_no_diff(img_path, timestamp, df_filtered, df_upsampled,
+                                           min_line_length=40.0, angle_tolerance_deg=8.0,
+                                           use_clahe=False, clahe_clip_limit=3.0):
+    """
+    Process a single image using Canny edges on the raw frame (no frame differencing).
+
+    Identical to process_image_with_canny_edges but operates only on the current frame,
+    so no previous image is needed. Useful when consecutive frames are not available or
+    when frame differencing suppresses real contrail signal.
+
+    Args:
+        img_path: Path to image file
+        timestamp: Timestamp for this image (pandas.Timestamp)
+        df_filtered: DataFrame with aircraft tracking data at this timestamp
+        df_upsampled: Full flight trajectory DataFrame for direction estimation
+        min_line_length: Minimum Hough line length to count as a contrail detection
+        angle_tolerance_deg: Maximum angle offset from flight direction to accept
+        use_clahe: Apply CLAHE contrast enhancement before edge detection
+        clahe_clip_limit: CLAHE clip limit
+
+    Returns:
+        img_output, rectangles dict, edge_data dict, edges_dict
+    """
+    img = cv2.imread(img_path)
+    if img is None:
+        return None, None, None, None
+
+    rectangles = get_directional_rectangle(
+        img, df_filtered, timestamp, df_upsampled, length_px=200, width_px=100)
+    if len(rectangles) == 0:
+        return img, {}, pd.DataFrame(), {}
+
+    img_output, edge_data, edges_dict = apply_canny_to_rectangles(
+        img, None, rectangles,
+        blur_kernel=(3, 3),
+        min_line_length=min_line_length,
+        angle_tolerance_deg=angle_tolerance_deg,
+        use_clahe=use_clahe,
+        clahe_clip_limit=clahe_clip_limit,
+        use_frame_diff=False,
     )
 
     return img_output, rectangles, edge_data, edges_dict
